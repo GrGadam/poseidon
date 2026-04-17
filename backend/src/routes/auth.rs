@@ -1,8 +1,6 @@
 use axum::{extract::State, Json};
-use serde::Deserialize;
 use sqlx::Row;
 use time::{Duration, OffsetDateTime};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -10,12 +8,8 @@ use crate::{
     dto::{AuthResponse, LoginRequest, OkResponse, RefreshRequest, RegisterRequest, UserDto},
     error::AppError,
     state::AppState,
+    ws,
 };
-
-#[derive(Deserialize, ToSchema)]
-pub struct LogoutRequest {
-    pub refresh_token: String,
-}
 
 #[utoipa::path(
     post,
@@ -187,17 +181,18 @@ pub async fn refresh(
 #[utoipa::path(
     post,
     path = "/api/v1/auth/logout",
-    request_body = LogoutRequest,
-    responses((status = 200, body = OkResponse))
+    responses((status = 200, body = OkResponse)),
+    security(("bearer_auth" = []))
 )]
 pub async fn logout(
     State(state): State<AppState>,
-    Json(payload): Json<LogoutRequest>,
+    user: AuthUser,
 ) -> Result<Json<OkResponse>, AppError> {
-    sqlx::query("DELETE FROM refresh_tokens WHERE token = ?")
-        .bind(payload.refresh_token)
-        .execute(&state.db)
-        .await?;
+    ws::emit(
+        &state,
+        "presence.updated",
+        serde_json::json!({"user_id": user.user_id, "online": false}),
+    );
 
     Ok(Json(OkResponse { ok: true }))
 }

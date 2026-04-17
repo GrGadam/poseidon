@@ -101,6 +101,7 @@ export const apiClient = {
 		request<ChannelMessageResponse[]>(`/channels/${encodeURIComponent(channelId)}/messages`, 'GET', undefined, accessToken),
 	channelSendMessage: (accessToken: string, channelId: string, content: string) =>
 		request<ChannelMessageResponse>(`/channels/${encodeURIComponent(channelId)}/messages`, 'POST', { content }, accessToken),
+	logout: (accessToken: string) => request('/auth/logout', 'POST', undefined, accessToken),
 	changeMyPassword: (accessToken: string, currentPassword: string, newPassword: string) =>
 		request('/users/me/password', 'POST', { current_password: currentPassword, new_password: newPassword }, accessToken),
 	uploadMyAvatar: async (accessToken: string, file: File): Promise<void> => {

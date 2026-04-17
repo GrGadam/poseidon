@@ -90,7 +90,6 @@ use utoipa_swagger_ui::SwaggerUi;
             dto::SendDmMessageRequest,
             dto::EditDmMessageRequest,
             dto::DmMessageDto,
-            routes::auth::LogoutRequest,
             routes::users::UpdateUsernameRequest,
             routes::users::ChangePasswordRequest,
             routes::servers::JoinInviteRequest,

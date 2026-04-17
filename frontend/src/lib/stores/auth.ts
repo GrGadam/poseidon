@@ -93,7 +93,16 @@ export async function register(username: string, email: string, password: string
 	updateSession(data as { access_token: string; refresh_token: string; user: { id: string; username: string } });
 }
 
-export function logout(): void {
+export async function logout(): Promise<void> {
+	const current = get(session);
+	if (current.accessToken) {
+		try {
+			await apiClient.logout(current.accessToken);
+		} catch {
+			// Ignore logout API errors; proceed with local cleanup
+		}
+	}
+
 	wsClient.disconnect();
 	session.set({ accessToken: null, refreshToken: null, userId: null, username: null });
 }
