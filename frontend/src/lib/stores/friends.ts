@@ -3,6 +3,7 @@ import { apiClient, apiConfig } from '$lib/api/client';
 import type { FriendEntry } from '$lib/types/domain';
 
 const initialFriends: FriendEntry[] = [];
+const dirtyAvatarUserIds = new Set<string>();
 
 export type PendingRequestEntry = {
 	requestId: string;
@@ -42,19 +43,22 @@ export async function refreshFriends(accessToken: string): Promise<void> {
 
 	const friendsWithAvatars = await Promise.all(
 		data.map(async (item) => {
+			const userId = item.user.id;
 			const avatarMime = item.user.avatar_mime ?? null;
-			const prev = previousById.get(item.user.id);
+			const prev = previousById.get(userId);
 			let avatarUrl = prev?.avatarUrl ?? null;
+			const shouldReloadAvatar = prev?.avatarMime !== avatarMime || dirtyAvatarUserIds.has(userId);
 
-			if (prev?.avatarMime !== avatarMime) {
+			if (shouldReloadAvatar) {
 				if (prev?.avatarUrl?.startsWith('blob:')) {
 					URL.revokeObjectURL(prev.avatarUrl);
 				}
-				avatarUrl = await loadAvatarUrl(accessToken, item.user.id, avatarMime);
+				avatarUrl = await loadAvatarUrl(accessToken, userId, avatarMime);
+				dirtyAvatarUserIds.delete(userId);
 			}
 
 			return {
-				id: item.user.id,
+				id: userId,
 				username: item.user.username,
 				avatarMime,
 				avatarUrl,
@@ -73,21 +77,35 @@ export async function refreshPendingRequests(accessToken: string): Promise<void>
 		id: string;
 		from_user: { id: string; username: string; avatar_mime?: string | null };
 	}>;
+	const previous = get(friendPending);
+	const previousByUserId = new Map(previous.map((entry) => [entry.userId, entry]));
+	const incomingUserIds = new Set(data.map((item) => item.from_user.id));
 
-	for (const entry of get(friendPending)) {
-		if (entry.avatarUrl?.startsWith('blob:')) {
+	for (const entry of previous) {
+		if (!incomingUserIds.has(entry.userId) && entry.avatarUrl?.startsWith('blob:')) {
 			URL.revokeObjectURL(entry.avatarUrl);
 		}
 	}
 
 	const pendingWithAvatars = await Promise.all(
 		data.map(async (item) => {
+			const userId = item.from_user.id;
 			const avatarMime = item.from_user.avatar_mime ?? null;
-			const avatarUrl = await loadAvatarUrl(accessToken, item.from_user.id, avatarMime);
+			const prev = previousByUserId.get(userId);
+			let avatarUrl = prev?.avatarUrl ?? null;
+			const shouldReloadAvatar = prev?.avatarMime !== avatarMime || dirtyAvatarUserIds.has(userId);
+
+			if (shouldReloadAvatar) {
+				if (prev?.avatarUrl?.startsWith('blob:')) {
+					URL.revokeObjectURL(prev.avatarUrl);
+				}
+				avatarUrl = await loadAvatarUrl(accessToken, userId, avatarMime);
+				dirtyAvatarUserIds.delete(userId);
+			}
 
 			return {
 				requestId: item.id,
-				userId: item.from_user.id,
+				userId,
 				username: item.from_user.username,
 				avatarMime,
 				avatarUrl
@@ -163,4 +181,8 @@ export function clearFriendUnread(userId: string): void {
 	friends.update((items) =>
 		items.map((item) => (item.id === userId ? { ...item, unread: 0 } : item))
 	);
+}
+
+export function markAvatarDirty(userId: string): void {
+	dirtyAvatarUserIds.add(userId);
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { get } from 'svelte/store';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import type {
 		ChannelMessageResponse,
 		ChannelResponse,
@@ -24,6 +24,7 @@
 		sendFriendRequest,
 		selectedFriend,
 		selectFriend,
+		markAvatarDirty,
 		setFriendLastMessage,
 		setFriendOnline
 	} from '$lib/stores/friends';
@@ -70,11 +71,32 @@
 	let chatLoading = $state(false);
 	let chatSending = $state(false);
 	let chatError = $state<string | null>(null);
+	let chatContainer = $state<HTMLDivElement | null>(null);
 
 	let serverChannels = $state<Record<string, ServerChannel[]>>({});
 	let dmThreadByFriendId = $state<Record<string, string>>({});
 	let friendByDmThreadId = $state<Record<string, string>>({});
 	let onlineUserIdsSnapshot = $state<string[]>([]);
+	const seenDmCreatedIds = new Set<string>();
+	const seenDmCreatedOrder: string[] = [];
+
+	const rememberDmCreatedId = (messageId: string): boolean => {
+		if (seenDmCreatedIds.has(messageId)) {
+			return false;
+		}
+
+		seenDmCreatedIds.add(messageId);
+		seenDmCreatedOrder.push(messageId);
+
+		if (seenDmCreatedOrder.length > 1000) {
+			const oldest = seenDmCreatedOrder.shift();
+			if (oldest) {
+				seenDmCreatedIds.delete(oldest);
+			}
+		}
+
+		return true;
+	};
 
 	const switchAuthMode = () => {
 		authMode = authMode === 'login' ? 'register' : 'login';
@@ -195,33 +217,82 @@
 
 	const byCreatedAtAsc = (a: ChatMessage, b: ChatMessage) => a.createdAt - b.createdAt;
 
-	const loadActiveMessages = async () => {
+	const scrollChatOnOpen = (unreadCount: number) => {
+		setTimeout(() => {
+			if (!chatContainer) {
+				return;
+			}
+
+			if (unreadCount > 0 && chatMessages.length > 0) {
+				const firstUnreadIndex = Math.max(0, chatMessages.length - unreadCount);
+				const messageNodes = chatContainer.querySelectorAll('[data-msg-index]');
+				const target = messageNodes[firstUnreadIndex] as HTMLElement | undefined;
+				if (target) {
+					target.scrollIntoView({ behavior: 'auto', block: 'start' });
+					return;
+				}
+			}
+
+			chatContainer.scrollTop = chatContainer.scrollHeight;
+		}, 0);
+	};
+
+	const loadActiveMessages = async (options?: { silent?: boolean; forceBottom?: boolean }) => {
 		const token = $session.accessToken;
 		if (!token) {
 			return;
 		}
 
-		chatLoading = true;
+		const silent = options?.silent ?? false;
+		const forceBottom = options?.forceBottom ?? false;
+		let previousScrollTop = 0;
+		let previousScrollHeight = 0;
+		let shouldStickToBottom = false;
+
+		if (silent && chatContainer) {
+			previousScrollTop = chatContainer.scrollTop;
+			previousScrollHeight = chatContainer.scrollHeight;
+			const distanceFromBottom = chatContainer.scrollHeight - (chatContainer.scrollTop + chatContainer.clientHeight);
+			shouldStickToBottom = forceBottom || distanceFromBottom <= 32;
+		}
+
+		if (!silent) {
+			chatLoading = true;
+		}
 		chatError = null;
 
 		try {
+			let nextMessages: ChatMessage[] | null = null;
+
 			if (activeChat === 'friend' && activeDmThreadId) {
 				const data = await apiClient.dmMessages(token, activeDmThreadId);
-				chatMessages = data.map(toChatMessage).sort(byCreatedAtAsc);
-				return;
-			}
-
-			if (activeChat === 'server' && selectedChannel?.id) {
+				nextMessages = data.map(toChatMessage).sort(byCreatedAtAsc);
+			} else if (activeChat === 'server' && selectedChannel?.id) {
 				const data = await apiClient.channelMessages(token, selectedChannel.id);
-				chatMessages = data.map(toChatMessage).sort(byCreatedAtAsc);
-				return;
+				nextMessages = data.map(toChatMessage).sort(byCreatedAtAsc);
 			}
 
-			chatMessages = [];
+			chatMessages = nextMessages ?? [];
 		} catch (error) {
 			chatError = error instanceof Error ? error.message : 'Az üzenetek betöltése sikertelen.';
 		} finally {
-			chatLoading = false;
+			if (!silent) {
+				chatLoading = false;
+			}
+		}
+
+		if (silent && chatContainer) {
+			await tick();
+			if (!chatContainer) {
+				return;
+			}
+
+			if (shouldStickToBottom) {
+				chatContainer.scrollTop = chatContainer.scrollHeight;
+			} else {
+				const heightDelta = chatContainer.scrollHeight - previousScrollHeight;
+				chatContainer.scrollTop = Math.max(0, previousScrollTop + heightDelta);
+			}
 		}
 	};
 
@@ -382,6 +453,8 @@
 			return;
 		}
 
+		const unreadCount = friend.unread;
+
 		selectFriend(friend);
 		selectedChannel = null;
 		chatInput = '';
@@ -401,6 +474,7 @@
 
 			activeDmThreadId = threadId;
 			await loadActiveMessages();
+			scrollChatOnOpen(unreadCount);
 		} catch (error) {
 			chatError = error instanceof Error ? error.message : 'A DM chat megnyitása sikertelen.';
 		}
@@ -430,6 +504,7 @@
 		chatError = null;
 		activeChat = 'server';
 		await loadActiveMessages();
+		scrollChatOnOpen(0);
 	};
 
 	const closeChat = () => {
@@ -533,6 +608,10 @@
 
 		try {
 			await apiClient.uploadMyAvatar(token, file);
+			if ($session.userId) {
+				markAvatarDirty($session.userId);
+			}
+			await Promise.all([refreshFriends(token), refreshPendingRequests(token)]);
 			profileUploadMessage = 'Profilkép feltöltve.';
 		} catch (error) {
 			profileUploadError = error instanceof Error ? error.message : 'A profilkép feltöltése sikertelen.';
@@ -575,6 +654,7 @@
 			const custom = event as CustomEvent<{ kind: string; payload: unknown }>;
 			const kind = custom.detail?.kind;
 			const payload = (custom.detail?.payload ?? {}) as {
+				id?: string;
 				thread_id?: string;
 				channel_id?: string;
 				user_id?: string;
@@ -598,6 +678,12 @@
 				return;
 			}
 
+			if ((kind === 'user.avatar.updated' || kind === 'user.updated') && payload.user_id && $session.accessToken) {
+				markAvatarDirty(payload.user_id);
+				await Promise.all([refreshFriends($session.accessToken), refreshPendingRequests($session.accessToken)]);
+				return;
+			}
+
 			if (
 				kind === 'friend.request.created' ||
 				kind === 'friend.request.accepted' ||
@@ -614,6 +700,10 @@
 			}
 
 			if (kind === 'dm.message.created' || kind === 'dm.message.updated' || kind === 'dm.message.deleted') {
+				if (kind === 'dm.message.created' && payload.id && !rememberDmCreatedId(payload.id)) {
+					return;
+				}
+
 				if (payload.thread_id) {
 					await updateFriendPreviewFromThread(payload.thread_id);
 
@@ -642,7 +732,7 @@
 					activeDmThreadId &&
 					payload.thread_id === activeDmThreadId
 				) {
-					await loadActiveMessages();
+					await loadActiveMessages({ silent: true, forceBottom: true });
 				}
 				return;
 			}
@@ -653,7 +743,7 @@
 				selectedChannel?.id &&
 				payload.channel_id === selectedChannel.id
 			) {
-				await loadActiveMessages();
+				await loadActiveMessages({ silent: true, forceBottom: true });
 			}
 		};
 
@@ -940,14 +1030,14 @@
 						<button class="btn btn-sm btn-ghost" onclick={closeChat}>Vissza</button>
 					</div>
 
-					<div class="flex-1 overflow-auto p-4 space-y-2">
+					<div class="flex-1 overflow-auto p-4 space-y-2" bind:this={chatContainer}>
 						{#if chatLoading}
 							<p class="text-sm text-slate-400">Üzenetek betöltése...</p>
 						{:else if chatMessages.length === 0}
 							<p class="text-sm text-slate-400">Még nincs üzenet.</p>
 						{:else}
-							{#each chatMessages as msg}
-								<div class={`chat ${msg.userId === $session.userId ? 'chat-end' : 'chat-start'}`}>
+							{#each chatMessages as msg, idx}
+								<div class={`chat ${msg.userId === $session.userId ? 'chat-end' : 'chat-start'}`} data-msg-index={idx}>
 									<div
 										class={`chat-bubble whitespace-pre-wrap break-words ${msg.userId === $session.userId ? 'chat-bubble-primary' : 'bg-slate-700 text-slate-100'}`}
 									>
