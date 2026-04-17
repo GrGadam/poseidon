@@ -5,6 +5,12 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
+		"dev:client1": "vite dev --host 127.0.0.1 --port 5173 --strictPort",
+		"dev:client2": "vite dev --host 127.0.0.1 --port 5174 --strictPort",
+		"desktop:dev": "tauri dev",
+		"desktop:dev:client1": "tauri dev",
+		"desktop:dev:client2": "tauri dev --config src-tauri/tauri.client2.conf.json",
+		"desktop:build": "tauri build",
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",

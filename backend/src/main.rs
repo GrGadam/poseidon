@@ -6,7 +6,7 @@ mod routes;
 mod state;
 mod ws;
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     routing::{delete, get, patch, post},
@@ -144,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         config: config.clone(),
         ws_tx,
+        presence_connections: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
 
     let cors = CorsLayer::new()

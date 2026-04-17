@@ -30,8 +30,12 @@ export async function refreshFriends(accessToken: string): Promise<void> {
 		user: { id: string; username: string; avatar_mime?: string | null };
 	}>;
 
-	for (const entry of get(friends)) {
-		if (entry.avatarUrl?.startsWith('blob:')) {
+	const previous = get(friends);
+	const previousById = new Map(previous.map((entry) => [entry.id, entry]));
+	const incomingIds = new Set(data.map((item) => item.user.id));
+
+	for (const entry of previous) {
+		if (!incomingIds.has(entry.id) && entry.avatarUrl?.startsWith('blob:')) {
 			URL.revokeObjectURL(entry.avatarUrl);
 		}
 	}
@@ -39,16 +43,24 @@ export async function refreshFriends(accessToken: string): Promise<void> {
 	const friendsWithAvatars = await Promise.all(
 		data.map(async (item) => {
 			const avatarMime = item.user.avatar_mime ?? null;
-			const avatarUrl = await loadAvatarUrl(accessToken, item.user.id, avatarMime);
+			const prev = previousById.get(item.user.id);
+			let avatarUrl = prev?.avatarUrl ?? null;
+
+			if (prev?.avatarMime !== avatarMime) {
+				if (prev?.avatarUrl?.startsWith('blob:')) {
+					URL.revokeObjectURL(prev.avatarUrl);
+				}
+				avatarUrl = await loadAvatarUrl(accessToken, item.user.id, avatarMime);
+			}
 
 			return {
 				id: item.user.id,
 				username: item.user.username,
 				avatarMime,
 				avatarUrl,
-				online: false,
-				lastMessage: '',
-				unread: 0
+				online: prev?.online ?? false,
+				lastMessage: prev?.lastMessage ?? '',
+				unread: prev?.unread ?? 0
 			};
 		})
 	);
@@ -125,4 +137,30 @@ export async function acceptFriendRequest(accessToken: string, requestId: string
 export async function rejectFriendRequest(accessToken: string, requestId: string): Promise<void> {
 	await apiClient.rejectFriendRequest(accessToken, requestId);
 	await refreshPendingRequests(accessToken);
+}
+
+export function setFriendOnline(userId: string, online: boolean): void {
+	friends.update((items) =>
+		items.map((item) => (item.id === userId ? { ...item, online } : item))
+	);
+}
+
+export function setFriendLastMessage(userId: string, lastMessage: string): void {
+	friends.update((items) =>
+		items.map((item) => (item.id === userId ? { ...item, lastMessage } : item))
+	);
+}
+
+export function incrementFriendUnread(userId: string): void {
+	friends.update((items) =>
+		items.map((item) =>
+			item.id === userId ? { ...item, unread: item.unread + 1 } : item
+		)
+	);
+}
+
+export function clearFriendUnread(userId: string): void {
+	friends.update((items) =>
+		items.map((item) => (item.id === userId ? { ...item, unread: 0 } : item))
+	);
 }

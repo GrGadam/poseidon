@@ -1,19 +1,31 @@
 <script lang="ts">
+	import { get } from 'svelte/store';
 	import { onMount } from 'svelte';
+	import type {
+		ChannelMessageResponse,
+		ChannelResponse,
+		DmMessageResponse,
+		DmThreadResponse
+	} from '$lib/api/client';
 	import { apiClient } from '$lib/api/client';
 	import { login, logout, register, session } from '$lib/stores/auth';
 	import { selectedTab } from '$lib/stores/ui';
 	import {
 		acceptFriendRequest,
+		clearFriendUnread,
 		friendPending,
 		friendOnline,
 		friendOffline,
+		friends,
+		incrementFriendUnread,
 		rejectFriendRequest,
 		refreshFriends,
 		refreshPendingRequests,
 		sendFriendRequest,
 		selectedFriend,
-		selectFriend
+		selectFriend,
+		setFriendLastMessage,
+		setFriendOnline
 	} from '$lib/stores/friends';
 	import { selectedServer, servers, selectServer } from '$lib/stores/servers';
 	import type { FriendEntry, ServerEntry } from '$lib/types/domain';
@@ -48,11 +60,21 @@
 
 	type ChatView = 'none' | 'friend' | 'server' | 'server-channels';
 	type ServerChannel = { id: string; name: string };
+	type ChatMessage = { id: string; userId: string; content: string; createdAt: number };
 
 	let activeChat = $state<ChatView>('none');
 	let selectedChannel = $state<ServerChannel | null>(null);
+	let activeDmThreadId = $state<string | null>(null);
+	let chatMessages = $state<ChatMessage[]>([]);
+	let chatInput = $state('');
+	let chatLoading = $state(false);
+	let chatSending = $state(false);
+	let chatError = $state<string | null>(null);
 
-	const serverChannels: Record<string, ServerChannel[]> = {};
+	let serverChannels = $state<Record<string, ServerChannel[]>>({});
+	let dmThreadByFriendId = $state<Record<string, string>>({});
+	let friendByDmThreadId = $state<Record<string, string>>({});
+	let onlineUserIdsSnapshot = $state<string[]>([]);
 
 	const switchAuthMode = () => {
 		authMode = authMode === 'login' ? 'register' : 'login';
@@ -101,6 +123,35 @@
 		}
 	};
 
+	const refreshFriendThreadCache = async () => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		const threads = await apiClient.dmThreads(token);
+		dmThreadByFriendId = {};
+		friendByDmThreadId = {};
+
+		for (const thread of threads) {
+			dmThreadByFriendId[thread.peer_user.id] = thread.id;
+			friendByDmThreadId[thread.id] = thread.peer_user.id;
+		}
+	};
+
+	const refreshFriendLatestMessages = async () => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		for (const [friendId, threadId] of Object.entries(dmThreadByFriendId)) {
+			const messages = await apiClient.dmMessages(token, threadId);
+			const latest = messages[0];
+			setFriendLastMessage(friendId, latest?.content ?? '');
+		}
+	};
+
 	const refreshFriendsData = async () => {
 		const token = $session.accessToken;
 		if (!token) {
@@ -108,6 +159,158 @@
 		}
 
 		await Promise.all([refreshFriends(token), refreshPendingRequests(token)]);
+		await refreshFriendThreadCache();
+		await refreshFriendLatestMessages();
+		applyPresenceSnapshot(onlineUserIdsSnapshot);
+	};
+
+	const refreshServersData = async () => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		const data = (await apiClient.servers(token)) as Array<{
+			id: string;
+			name: string;
+			description?: string | null;
+		}>;
+
+		servers.set(
+			data.map((item) => ({
+				id: item.id,
+				name: item.name,
+				description: item.description ?? '',
+				hasUnread: false
+			}))
+		);
+	};
+
+	const toChatMessage = (item: DmMessageResponse | ChannelMessageResponse): ChatMessage => ({
+		id: item.id,
+		userId: item.user_id,
+		content: item.content,
+		createdAt: item.created_at
+	});
+
+	const byCreatedAtAsc = (a: ChatMessage, b: ChatMessage) => a.createdAt - b.createdAt;
+
+	const loadActiveMessages = async () => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		chatLoading = true;
+		chatError = null;
+
+		try {
+			if (activeChat === 'friend' && activeDmThreadId) {
+				const data = await apiClient.dmMessages(token, activeDmThreadId);
+				chatMessages = data.map(toChatMessage).sort(byCreatedAtAsc);
+				return;
+			}
+
+			if (activeChat === 'server' && selectedChannel?.id) {
+				const data = await apiClient.channelMessages(token, selectedChannel.id);
+				chatMessages = data.map(toChatMessage).sort(byCreatedAtAsc);
+				return;
+			}
+
+			chatMessages = [];
+		} catch (error) {
+			chatError = error instanceof Error ? error.message : 'Az üzenetek betöltése sikertelen.';
+		} finally {
+			chatLoading = false;
+		}
+	};
+
+	const loadServerChannels = async (serverId: string) => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		const data = await apiClient.serverChannels(token, serverId);
+		serverChannels = {
+			...serverChannels,
+			[serverId]: data.map((channel: ChannelResponse) => ({ id: channel.id, name: channel.name }))
+		};
+	};
+
+	const resolveFriendIdByThread = async (threadId: string): Promise<string | null> => {
+		const cached = friendByDmThreadId[threadId];
+		if (cached) {
+			return cached;
+		}
+
+		await refreshFriendThreadCache();
+		return friendByDmThreadId[threadId] ?? null;
+	};
+
+	const updateFriendPreviewFromThread = async (threadId: string) => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		const friendId = await resolveFriendIdByThread(threadId);
+		if (!friendId) {
+			return;
+		}
+
+		const messages = await apiClient.dmMessages(token, threadId);
+		const latest = messages[0];
+		setFriendLastMessage(friendId, latest?.content ?? '');
+	};
+
+	const applyPresenceSnapshot = (onlineUserIds: string[]) => {
+		const onlineSet = new Set(onlineUserIds);
+		for (const friend of get(friends)) {
+			setFriendOnline(friend.id, onlineSet.has(friend.id));
+		}
+	};
+
+	const handleSendChatMessage = async () => {
+		const token = $session.accessToken;
+		if (!token || chatSending) {
+			return;
+		}
+
+		const content = chatInput.trim();
+		if (!content) {
+			return;
+		}
+
+		chatSending = true;
+		chatError = null;
+
+		try {
+			if (activeChat === 'friend' && activeDmThreadId) {
+				const sent = await apiClient.dmSendMessage(token, activeDmThreadId, content);
+				chatMessages = [...chatMessages, toChatMessage(sent)].sort(byCreatedAtAsc);
+				const friendId = friendByDmThreadId[activeDmThreadId];
+				if (friendId) {
+					setFriendLastMessage(friendId, sent.content);
+					clearFriendUnread(friendId);
+				}
+				chatInput = '';
+				return;
+			}
+
+			if (activeChat === 'server' && selectedChannel?.id) {
+				const sent = await apiClient.channelSendMessage(token, selectedChannel.id, content);
+				chatMessages = [...chatMessages, toChatMessage(sent)].sort(byCreatedAtAsc);
+				chatInput = '';
+				return;
+			}
+
+			chatError = 'Nincs aktív chat kiválasztva.';
+		} catch (error) {
+			chatError = error instanceof Error ? error.message : 'Az üzenet küldése sikertelen.';
+		} finally {
+			chatSending = false;
+		}
 	};
 
 	const handleCreateFriendRequest = async () => {
@@ -173,25 +376,68 @@
 		}
 	};
 
-	const openFriendChat = (friend: FriendEntry) => {
+	const openFriendChat = async (friend: FriendEntry) => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
 		selectFriend(friend);
 		selectedChannel = null;
+		chatInput = '';
+		chatMessages = [];
+		chatError = null;
 		activeChat = 'friend';
+		clearFriendUnread(friend.id);
+
+		try {
+			let threadId = dmThreadByFriendId[friend.id] ?? null;
+			if (!threadId) {
+				const thread = (await apiClient.dmCreateOrGetThread(token, friend.id)) as DmThreadResponse;
+				threadId = thread.id;
+				dmThreadByFriendId[friend.id] = thread.id;
+				friendByDmThreadId[thread.id] = friend.id;
+			}
+
+			activeDmThreadId = threadId;
+			await loadActiveMessages();
+		} catch (error) {
+			chatError = error instanceof Error ? error.message : 'A DM chat megnyitása sikertelen.';
+		}
 	};
 
-	const openServerChannels = (server: ServerEntry) => {
+	const openServerChannels = async (server: ServerEntry) => {
 		selectServer(server);
 		activeChat = 'server-channels';
 		selectedChannel = null;
+		activeDmThreadId = null;
+		chatMessages = [];
+		chatError = null;
+		chatInput = '';
+
+		try {
+			await loadServerChannels(server.id);
+		} catch (error) {
+			chatError = error instanceof Error ? error.message : 'A csatornák betöltése sikertelen.';
+		}
 	};
 
-	const openServerChannelChat = (channel: ServerChannel) => {
+	const openServerChannelChat = async (channel: ServerChannel) => {
 		selectedChannel = channel;
+		activeDmThreadId = null;
+		chatInput = '';
+		chatMessages = [];
+		chatError = null;
 		activeChat = 'server';
+		await loadActiveMessages();
 	};
 
 	const closeChat = () => {
 		activeChat = 'none';
+		activeDmThreadId = null;
+		chatMessages = [];
+		chatError = null;
+		chatInput = '';
 	};
 
 	const backToServerList = () => {
@@ -299,6 +545,13 @@
 		settingsMenuOpen = false;
 		activeChat = 'none';
 		selectedChannel = null;
+		activeDmThreadId = null;
+		chatMessages = [];
+		chatInput = '';
+		chatError = null;
+		dmThreadByFriendId = {};
+		friendByDmThreadId = {};
+		onlineUserIdsSnapshot = [];
 		addFriendModalOpen = false;
 		pendingModalOpen = false;
 		addFriendUsername = '';
@@ -321,6 +574,29 @@
 		const handler = async (event: Event) => {
 			const custom = event as CustomEvent<{ kind: string; payload: unknown }>;
 			const kind = custom.detail?.kind;
+			const payload = (custom.detail?.payload ?? {}) as {
+				thread_id?: string;
+				channel_id?: string;
+				user_id?: string;
+				online?: boolean;
+				online_user_ids?: string[];
+			};
+
+			if (kind === 'presence.snapshot') {
+				onlineUserIdsSnapshot = payload.online_user_ids ?? [];
+				applyPresenceSnapshot(onlineUserIdsSnapshot);
+				return;
+			}
+
+			if (kind === 'presence.updated' && payload.user_id && typeof payload.online === 'boolean') {
+				if (payload.online) {
+					onlineUserIdsSnapshot = Array.from(new Set([...onlineUserIdsSnapshot, payload.user_id]));
+				} else {
+					onlineUserIdsSnapshot = onlineUserIdsSnapshot.filter((id) => id !== payload.user_id);
+				}
+				setFriendOnline(payload.user_id, payload.online);
+				return;
+			}
 
 			if (
 				kind === 'friend.request.created' ||
@@ -329,6 +605,55 @@
 				kind === 'friend.deleted'
 			) {
 				await refreshFriendsData();
+				return;
+			}
+
+			if (kind === 'server.created' || kind === 'server.updated' || kind === 'server.deleted' || kind === 'server.joined') {
+				await refreshServersData();
+				return;
+			}
+
+			if (kind === 'dm.message.created' || kind === 'dm.message.updated' || kind === 'dm.message.deleted') {
+				if (payload.thread_id) {
+					await updateFriendPreviewFromThread(payload.thread_id);
+
+					if (
+						kind === 'dm.message.created' &&
+						payload.user_id &&
+						payload.user_id !== $session.userId
+					) {
+						const friendId = await resolveFriendIdByThread(payload.thread_id);
+						if (friendId) {
+							const currentlyOpenWithFriend =
+								activeChat === 'friend' &&
+								activeDmThreadId === payload.thread_id;
+
+							if (currentlyOpenWithFriend) {
+								clearFriendUnread(friendId);
+							} else {
+								incrementFriendUnread(friendId);
+							}
+						}
+					}
+				}
+
+				if (
+					activeChat === 'friend' &&
+					activeDmThreadId &&
+					payload.thread_id === activeDmThreadId
+				) {
+					await loadActiveMessages();
+				}
+				return;
+			}
+
+			if (
+				(kind === 'channel.message.created' || kind === 'channel.message.updated' || kind === 'channel.message.deleted') &&
+				activeChat === 'server' &&
+				selectedChannel?.id &&
+				payload.channel_id === selectedChannel.id
+			) {
+				await loadActiveMessages();
 			}
 		};
 
@@ -360,7 +685,7 @@
 
 		if (lastLoadedToken !== token) {
 			lastLoadedToken = token;
-			void refreshFriendsData();
+			void Promise.all([refreshFriendsData(), refreshServersData()]);
 		}
 	});
 </script>
@@ -615,12 +940,46 @@
 						<button class="btn btn-sm btn-ghost" onclick={closeChat}>Vissza</button>
 					</div>
 
-					<div class="flex-1 overflow-auto p-4"></div>
+					<div class="flex-1 overflow-auto p-4 space-y-2">
+						{#if chatLoading}
+							<p class="text-sm text-slate-400">Üzenetek betöltése...</p>
+						{:else if chatMessages.length === 0}
+							<p class="text-sm text-slate-400">Még nincs üzenet.</p>
+						{:else}
+							{#each chatMessages as msg}
+								<div class={`chat ${msg.userId === $session.userId ? 'chat-end' : 'chat-start'}`}>
+									<div
+										class={`chat-bubble whitespace-pre-wrap break-words ${msg.userId === $session.userId ? 'chat-bubble-primary' : 'bg-slate-700 text-slate-100'}`}
+									>
+										{msg.content}
+									</div>
+									<div class="chat-footer text-[10px] text-slate-500 mt-1">
+										{new Date(msg.createdAt * 1000).toLocaleTimeString()}
+									</div>
+								</div>
+							{/each}
+						{/if}
+					</div>
 
 					<div class="border-t border-slate-700/60 p-3 bg-slate-800/50">
+						{#if chatError}
+							<div class="alert alert-error py-2 text-sm mb-2"><span>{chatError}</span></div>
+						{/if}
 						<div class="join w-full">
-							<input class="input input-bordered join-item flex-1" placeholder="Írj üzenetet..." />
-							<button class="btn join-item btn-primary">Küldés</button>
+							<input
+								class="input input-bordered join-item flex-1"
+								placeholder="Írj üzenetet..."
+								bind:value={chatInput}
+								onkeydown={(event) => {
+									if (event.key === 'Enter' && !event.shiftKey) {
+										event.preventDefault();
+										void handleSendChatMessage();
+									}
+								}}
+							/>
+							<button class="btn join-item btn-primary" onclick={handleSendChatMessage} disabled={chatSending}>
+								{chatSending ? 'Küldés...' : 'Küldés'}
+							</button>
 						</div>
 					</div>
 				</section>
