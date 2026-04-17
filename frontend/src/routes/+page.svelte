@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { apiClient } from '$lib/api/client';
 	import { login, logout, register, session } from '$lib/stores/auth';
 	import { selectedTab } from '$lib/stores/ui';
 	import {
@@ -32,6 +33,18 @@
 	let pendingActionError = $state<string | null>(null);
 	let pendingActionInProgressId = $state<string | null>(null);
 	let lastLoadedToken = $state<string | null>(null);
+	let profileUploadMessage = $state<string | null>(null);
+	let profileUploadError = $state<string | null>(null);
+	let passwordModalOpen = $state(false);
+	let currentPasswordInput = $state('');
+	let newPasswordInput = $state('');
+	let newPasswordConfirmInput = $state('');
+	let passwordChangeError = $state<string | null>(null);
+	let passwordChangeMessage = $state<string | null>(null);
+	let passwordChangeLoading = $state(false);
+	let avatarInputEl = $state<HTMLInputElement | null>(null);
+	let settingsMenuOpen = $state(false);
+	let settingsMenuEl = $state<HTMLElement | null>(null);
 
 	type ChatView = 'none' | 'friend' | 'server' | 'server-channels';
 	type ServerChannel = { id: string; name: string };
@@ -196,7 +209,94 @@
 		pendingActionError = null;
 	};
 
+	const openPasswordModal = () => {
+		passwordModalOpen = true;
+		passwordChangeError = null;
+		passwordChangeMessage = null;
+		currentPasswordInput = '';
+		newPasswordInput = '';
+		newPasswordConfirmInput = '';
+	};
+
+	const handlePasswordChange = async () => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		passwordChangeError = null;
+		passwordChangeMessage = null;
+
+		if (!currentPasswordInput || !newPasswordInput || !newPasswordConfirmInput) {
+			passwordChangeError = 'Minden mezőt tölts ki.';
+			return;
+		}
+
+		if (newPasswordInput.length < 6) {
+			passwordChangeError = 'Az új jelszónak legalább 6 karakteresnek kell lennie.';
+			return;
+		}
+
+		if (newPasswordInput !== newPasswordConfirmInput) {
+			passwordChangeError = 'Az új jelszó és a megerősítés nem egyezik.';
+			return;
+		}
+
+		if (currentPasswordInput === newPasswordInput) {
+			passwordChangeError = 'Az új jelszó nem lehet azonos a régivel.';
+			return;
+		}
+
+		passwordChangeLoading = true;
+		try {
+			await apiClient.changeMyPassword(token, currentPasswordInput, newPasswordInput);
+			passwordChangeMessage = 'A jelszó sikeresen módosítva.';
+			currentPasswordInput = '';
+			newPasswordInput = '';
+			newPasswordConfirmInput = '';
+		} catch (error) {
+			if (error instanceof Error && error.message === 'unauthorized') {
+				passwordChangeError = 'A jelenlegi jelszó hibás.';
+			} else {
+				passwordChangeError = error instanceof Error ? error.message : 'A jelszó módosítása sikertelen.';
+			}
+		} finally {
+			passwordChangeLoading = false;
+		}
+	};
+
+	const handleOpenAvatarUpload = () => {
+		settingsMenuOpen = false;
+		avatarInputEl?.click();
+	};
+
+	const handleAvatarPicked = async (event: Event) => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) {
+			return;
+		}
+
+		profileUploadError = null;
+		profileUploadMessage = null;
+
+		try {
+			await apiClient.uploadMyAvatar(token, file);
+			profileUploadMessage = 'Profilkép feltöltve.';
+		} catch (error) {
+			profileUploadError = error instanceof Error ? error.message : 'A profilkép feltöltése sikertelen.';
+		} finally {
+			input.value = '';
+		}
+	};
+
 	const handleLogout = () => {
+		settingsMenuOpen = false;
 		activeChat = 'none';
 		selectedChannel = null;
 		addFriendModalOpen = false;
@@ -205,6 +305,14 @@
 		addFriendError = null;
 		addFriendMessage = null;
 		pendingActionError = null;
+		profileUploadError = null;
+		profileUploadMessage = null;
+		passwordModalOpen = false;
+		passwordChangeError = null;
+		passwordChangeMessage = null;
+		currentPasswordInput = '';
+		newPasswordInput = '';
+		newPasswordConfirmInput = '';
 		lastLoadedToken = null;
 		logout();
 	};
@@ -224,8 +332,23 @@
 			}
 		};
 
+		const handleOutsideClick = (event: MouseEvent) => {
+			if (!settingsMenuOpen || !settingsMenuEl) {
+				return;
+			}
+
+			const target = event.target as Node | null;
+			if (target && !settingsMenuEl.contains(target)) {
+				settingsMenuOpen = false;
+			}
+		};
+
 		window.addEventListener('poseidon:ws-event', handler as EventListener);
-		return () => window.removeEventListener('poseidon:ws-event', handler as EventListener);
+		window.addEventListener('click', handleOutsideClick);
+		return () => {
+			window.removeEventListener('poseidon:ws-event', handler as EventListener);
+			window.removeEventListener('click', handleOutsideClick);
+		};
 	});
 
 	$effect(() => {
@@ -311,14 +434,49 @@
 {:else}
 	<main class="h-screen w-full p-2">
 		<div class="h-full w-full overflow-hidden border border-slate-700/70 bg-slate-900/85 flex flex-col">
-			<div class="h-12 border-b border-slate-700/60 px-3 flex items-center justify-between bg-slate-900/70">
-				<p class="text-sm text-slate-300 truncate">{$session.username ?? 'Felhasználó'}</p>
-				<button class="btn btn-xs btn-outline" type="button" onclick={handleLogout}>Kijelentkezés</button>
-			</div>
-
 			<div class="flex-1 min-h-0">
 			{#if activeChat === 'none'}
 				<section class="h-full p-3 overflow-auto">
+					<div class="h-12 border border-slate-700/60 rounded-md px-3 mb-3 flex items-center justify-between bg-slate-900/70">
+						<p class="text-sm text-slate-300 truncate">{$session.username ?? 'Felhasználó'}</p>
+						<div class="relative" bind:this={settingsMenuEl}>
+							<button
+								type="button"
+								class="btn btn-sm btn-circle btn-ghost text-xl leading-none"
+								onclick={() => {
+									settingsMenuOpen = !settingsMenuOpen;
+								}}
+							>
+								⚙
+							</button>
+
+							{#if settingsMenuOpen}
+								<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
+									<li><button type="button" onclick={handleOpenAvatarUpload}>Profilkép feltöltés</button></li>
+									<li>
+										<button
+											type="button"
+											onclick={() => {
+												settingsMenuOpen = false;
+												openPasswordModal();
+											}}
+										>
+											Jelszó módosítás
+										</button>
+									</li>
+									<li><button type="button" onclick={handleLogout}>Kijelentkezés</button></li>
+								</ul>
+							{/if}
+						</div>
+					</div>
+
+					{#if profileUploadError}
+						<div class="alert alert-error py-2 text-sm mb-3"><span>{profileUploadError}</span></div>
+					{/if}
+					{#if profileUploadMessage}
+						<div class="alert alert-success py-2 text-sm mb-3"><span>{profileUploadMessage}</span></div>
+					{/if}
+
 					<div class="tabs tabs-boxed bg-slate-800/70 mb-3 w-full">
 						<button class={`tab flex-1 ${$selectedTab === 'friends' ? 'tab-active' : ''}`} onclick={() => { $selectedTab = 'friends'; }}>
 							Friends
@@ -349,7 +507,16 @@
 							{#each $friendOnline as item}
 								<li>
 									<button type="button" onclick={() => openFriendChat(item)}>
-										<div class="flex-1">
+										<div class="avatar mr-3">
+											<div class="w-9 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
+												{#if item.avatarUrl}
+													<img src={item.avatarUrl} alt={`${item.username} avatar`} class="h-full w-full object-cover" />
+												{:else}
+													<span class="text-xs font-semibold">{item.username.slice(0, 1).toUpperCase()}</span>
+												{/if}
+											</div>
+										</div>
+										<div class="flex-1 text-left">
 											<p class="font-medium">{item.username}</p>
 											<p class="text-xs text-slate-400 truncate">{item.lastMessage}</p>
 										</div>
@@ -366,7 +533,16 @@
 							{#each $friendOffline as item}
 								<li>
 									<button type="button" onclick={() => openFriendChat(item)}>
-										<div class="flex-1">
+										<div class="avatar mr-3">
+											<div class="w-9 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
+												{#if item.avatarUrl}
+													<img src={item.avatarUrl} alt={`${item.username} avatar`} class="h-full w-full object-cover" />
+												{:else}
+													<span class="text-xs font-semibold">{item.username.slice(0, 1).toUpperCase()}</span>
+												{/if}
+											</div>
+										</div>
+										<div class="flex-1 text-left">
 											<p class="font-medium">{item.username}</p>
 											<p class="text-xs text-slate-400 truncate">{item.lastMessage}</p>
 										</div>
@@ -450,6 +626,54 @@
 				</section>
 			{/if}
 			</div>
+
+			<input
+				bind:this={avatarInputEl}
+				type="file"
+				accept="image/png,image/jpeg"
+				class="hidden"
+				onchange={handleAvatarPicked}
+			/>
+
+			{#if passwordModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Jelszó módosítás</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { passwordModalOpen = false; }}>✕</button>
+						</div>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Jelenlegi jelszó</span>
+							<input class="input input-bordered w-full" type="password" bind:value={currentPasswordInput} />
+						</label>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Új jelszó</span>
+							<input class="input input-bordered w-full" type="password" bind:value={newPasswordInput} />
+						</label>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Új jelszó megerősítése</span>
+							<input class="input input-bordered w-full" type="password" bind:value={newPasswordConfirmInput} />
+						</label>
+
+						{#if passwordChangeError}
+							<div class="alert alert-error py-2 text-sm"><span>{passwordChangeError}</span></div>
+						{/if}
+						{#if passwordChangeMessage}
+							<div class="alert alert-success py-2 text-sm"><span>{passwordChangeMessage}</span></div>
+						{/if}
+
+						<div class="flex justify-end gap-2">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { passwordModalOpen = false; }}>Mégse</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={passwordChangeLoading} onclick={handlePasswordChange}>
+								{passwordChangeLoading ? 'Mentés...' : 'Mentés'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
 
 			{#if addFriendModalOpen}
 				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">

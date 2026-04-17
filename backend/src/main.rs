@@ -43,6 +43,7 @@ use utoipa_swagger_ui::SwaggerUi;
         routes::dm::delete_message,
         routes::users::update_me,
         routes::users::delete_me,
+        routes::users::change_password,
         routes::users::upload_avatar,
         routes::users::get_avatar,
         routes::servers::create_server,
@@ -91,6 +92,7 @@ use utoipa_swagger_ui::SwaggerUi;
             dto::DmMessageDto,
             routes::auth::LogoutRequest,
             routes::users::UpdateUsernameRequest,
+            routes::users::ChangePasswordRequest,
             routes::servers::JoinInviteRequest,
             routes::servers::RoleUpdateRequest,
             routes::channels::EditMessageRequest,
@@ -157,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/logout", post(routes::auth::logout))
         .route("/auth/me", get(routes::auth::me))
         .route("/users/me", patch(routes::users::update_me).delete(routes::users::delete_me))
+        .route("/users/me/password", post(routes::users::change_password))
         .route("/users/me/avatar", post(routes::users::upload_avatar))
         .route("/users/{user_id}/avatar", get(routes::users::get_avatar))
         .route("/friends", get(routes::friends::list_friends))

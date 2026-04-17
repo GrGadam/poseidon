@@ -27,18 +27,33 @@ export function selectFriend(friend: FriendEntry): void {
 
 export async function refreshFriends(accessToken: string): Promise<void> {
 	const data = (await apiClient.friends(accessToken)) as Array<{
-		user: { id: string; username: string };
+		user: { id: string; username: string; avatar_mime?: string | null };
 	}>;
 
-	friends.set(
-		data.map((item) => ({
-			id: item.user.id,
-			username: item.user.username,
-			online: false,
-			lastMessage: '',
-			unread: 0
-		}))
+	for (const entry of get(friends)) {
+		if (entry.avatarUrl?.startsWith('blob:')) {
+			URL.revokeObjectURL(entry.avatarUrl);
+		}
+	}
+
+	const friendsWithAvatars = await Promise.all(
+		data.map(async (item) => {
+			const avatarMime = item.user.avatar_mime ?? null;
+			const avatarUrl = await loadAvatarUrl(accessToken, item.user.id, avatarMime);
+
+			return {
+				id: item.user.id,
+				username: item.user.username,
+				avatarMime,
+				avatarUrl,
+				online: false,
+				lastMessage: '',
+				unread: 0
+			};
+		})
 	);
+
+	friends.set(friendsWithAvatars);
 }
 
 export async function refreshPendingRequests(accessToken: string): Promise<void> {

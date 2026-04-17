@@ -57,7 +57,33 @@ export const apiClient = {
 		request(`/friends/requests/${requestId}/accept`, 'POST', undefined, accessToken),
 	rejectFriendRequest: (accessToken: string, requestId: string) =>
 		request(`/friends/requests/${requestId}`, 'DELETE', undefined, accessToken),
-	servers: (accessToken: string) => request('/servers', 'GET', undefined, accessToken)
+	servers: (accessToken: string) => request('/servers', 'GET', undefined, accessToken),
+	changeMyPassword: (accessToken: string, currentPassword: string, newPassword: string) =>
+		request('/users/me/password', 'POST', { current_password: currentPassword, new_password: newPassword }, accessToken),
+	uploadMyAvatar: async (accessToken: string, file: File): Promise<void> => {
+		const formData = new FormData();
+		formData.append('avatar', file);
+
+		const res = await fetch(`${API_BASE_URL}/users/me/avatar`, {
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${accessToken}`
+			},
+			body: formData
+		});
+
+		if (!res.ok) {
+			let message = `Request failed (${res.status})`;
+			const contentType = res.headers.get('content-type') ?? '';
+			if (contentType.includes('application/json')) {
+				const body = (await res.json()) as { error?: string };
+				if (body.error) {
+					message = body.error;
+				}
+			}
+			throw new Error(message);
+		}
+	}
 };
 
 export const apiConfig = {

@@ -9,7 +9,7 @@ use sqlx::Row;
 use utoipa::ToSchema;
 
 use crate::{
-    auth::AuthUser,
+    auth::{hash_password, verify_password, AuthUser},
     dto::{OkResponse, UserDto},
     error::AppError,
     state::AppState,
@@ -19,6 +19,12 @@ use crate::{
 #[derive(Debug, serde::Deserialize, ToSchema)]
 pub struct UpdateUsernameRequest {
     pub username: String,
+}
+
+#[derive(Debug, serde::Deserialize, ToSchema)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
 }
 
 #[utoipa::path(
@@ -84,6 +90,59 @@ pub async fn delete_me(
     ws::emit(
         &state,
         "user.deleted",
+        serde_json::json!({"user_id": user.user_id}),
+    );
+
+    Ok(Json(OkResponse { ok: true }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/users/me/password",
+    request_body = ChangePasswordRequest,
+    responses((status = 200, body = OkResponse)),
+    security(("bearer_auth" = []))
+)]
+pub async fn change_password(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> Result<Json<OkResponse>, AppError> {
+    if payload.new_password.len() < 6 {
+        return Err(AppError::BadRequest(
+            "new password must be at least 6 chars".to_string(),
+        ));
+    }
+
+    if payload.current_password == payload.new_password {
+        return Err(AppError::BadRequest(
+            "new password must be different from current password".to_string(),
+        ));
+    }
+
+    let row = sqlx::query("SELECT password_hash FROM users WHERE id = ?")
+        .bind(&user.user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+
+    let current_hash: String = row.get("password_hash");
+    let is_valid = verify_password(&payload.current_password, &current_hash)?;
+    if !is_valid {
+        return Err(AppError::Unauthorized);
+    }
+
+    let new_hash = hash_password(&payload.new_password)?;
+
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(new_hash)
+        .bind(&user.user_id)
+        .execute(&state.db)
+        .await?;
+
+    ws::emit(
+        &state,
+        "user.password.updated",
         serde_json::json!({"user_id": user.user_id}),
     );
 

@@ -3,6 +3,8 @@ export type AppTab = 'friends' | 'servers';
 export type FriendEntry = {
 	id: string;
 	username: string;
+	avatarMime?: string | null;
+	avatarUrl?: string | null;
 	online: boolean;
 	lastMessage: string;
 	unread: number;
