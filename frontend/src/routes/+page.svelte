@@ -57,8 +57,24 @@
 	let createChannelLoading = $state(false);
 	let serverSettingsMenuOpen = $state(false);
 	let serverSettingsMenuEl = $state<HTMLElement | null>(null);
+	let channelSettingsMenuOpen = $state(false);
+	let channelSettingsMenuEl = $state<HTMLElement | null>(null);
 	let friendSettingsMenuOpen = $state(false);
 	let friendSettingsMenuEl = $state<HTMLElement | null>(null);
+	let updateChannelNameModalOpen = $state(false);
+	let updateChannelNameValue = $state('');
+	let updateChannelNameError = $state<string | null>(null);
+	let updateChannelNameLoading = $state(false);
+	let updateChannelEmojiModalOpen = $state(false);
+	let updateChannelEmojiValue = $state('💬');
+	let updateChannelEmojiError = $state<string | null>(null);
+	let updateChannelEmojiLoading = $state(false);
+	let deleteChannelModalOpen = $state(false);
+	let deleteChannelConfirmText = $state('');
+	let deleteChannelError = $state<string | null>(null);
+	let deleteChannelLoading = $state(false);
+	let createChannelEmojiPickerOpen = $state(false);
+	let updateChannelEmojiPickerOpen = $state(false);
 	let updateServerNameModalOpen = $state(false);
 	let updateServerNameValue = $state('');
 	let updateServerNameError = $state<string | null>(null);
@@ -80,6 +96,8 @@
 	let lastLoadedToken = $state<string | null>(null);
 	let profileUploadMessage = $state<string | null>(null);
 	let profileUploadError = $state<string | null>(null);
+	let serverAvatarUploadMessage = $state<string | null>(null);
+	let serverAvatarUploadError = $state<string | null>(null);
 	let passwordModalOpen = $state(false);
 	let currentPasswordInput = $state('');
 	let newPasswordInput = $state('');
@@ -88,6 +106,7 @@
 	let passwordChangeMessage = $state<string | null>(null);
 	let passwordChangeLoading = $state(false);
 	let avatarInputEl = $state<HTMLInputElement | null>(null);
+	let serverAvatarInputEl = $state<HTMLInputElement | null>(null);
 	let settingsMenuOpen = $state(false);
 	let settingsMenuEl = $state<HTMLElement | null>(null);
 
@@ -112,6 +131,25 @@
 
 	const loadUserAvatarUrl = async (accessToken: string, userId: string): Promise<string | null> => {
 		const res = await fetch(`${apiConfig.baseUrl}/users/${encodeURIComponent(userId)}/avatar`, {
+			headers: {
+				Authorization: `Bearer ${accessToken}`
+			}
+		});
+
+		if (!res.ok) {
+			return null;
+		}
+
+		const blob = await res.blob();
+		if (blob.size === 0) {
+			return null;
+		}
+
+		return URL.createObjectURL(blob);
+	};
+
+	const loadServerAvatarUrl = async (accessToken: string, serverId: string): Promise<string | null> => {
+		const res = await fetch(`${apiConfig.baseUrl}/servers/${encodeURIComponent(serverId)}/avatar`, {
 			headers: {
 				Authorization: `Bearer ${accessToken}`
 			}
@@ -263,10 +301,18 @@
 		const nextServers = await Promise.all(
 			data.map(async (item) => {
 				const previous = previousById.get(item.id);
-				let avatarUrl = previous?.avatarUrl ?? null;
-
+				const previousAvatarUrl = previous?.avatarUrl ?? null;
+				let avatarUrl = await loadServerAvatarUrl(token, item.id);
 				if (!avatarUrl) {
 					avatarUrl = await loadUserAvatarUrl(token, item.owner_id);
+				}
+
+				if (
+					previousAvatarUrl &&
+					previousAvatarUrl.startsWith('blob:') &&
+					previousAvatarUrl !== avatarUrl
+				) {
+					URL.revokeObjectURL(previousAvatarUrl);
 				}
 
 				return {
@@ -578,6 +624,7 @@
 
 	const openServerChannelChat = async (channel: ServerChannel) => {
 		selectedChannel = channel;
+		channelSettingsMenuOpen = false;
 		activeDmThreadId = null;
 		chatInput = '';
 		chatMessages = [];
@@ -589,6 +636,7 @@
 
 	const closeChat = () => {
 		activeChat = 'none';
+		channelSettingsMenuOpen = false;
 		friendSettingsMenuOpen = false;
 		activeDmThreadId = null;
 		chatMessages = [];
@@ -596,8 +644,23 @@
 		chatInput = '';
 	};
 
+	const handleChatBack = () => {
+		if (activeChat === 'server') {
+			activeChat = 'server-channels';
+			selectedChannel = null;
+			channelSettingsMenuOpen = false;
+			chatMessages = [];
+			chatError = null;
+			chatInput = '';
+			return;
+		}
+
+		closeChat();
+	};
+
 	const backToServerList = () => {
 		activeChat = 'none';
+		channelSettingsMenuOpen = false;
 	};
 
 	const openAddFriendModal = () => {
@@ -670,6 +733,49 @@
 		createChannelError = null;
 		createChannelName = '';
 		createChannelEmoji = '💬';
+		createChannelEmojiPickerOpen = false;
+	};
+
+	const handleOpenServerAvatarUpload = () => {
+		serverSettingsMenuOpen = false;
+		serverAvatarUploadError = null;
+		serverAvatarUploadMessage = null;
+		serverAvatarInputEl?.click();
+	};
+
+	const handleServerAvatarPicked = async (event: Event) => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId) {
+			return;
+		}
+
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) {
+			return;
+		}
+
+		serverAvatarUploadError = null;
+		serverAvatarUploadMessage = null;
+
+		try {
+			await apiClient.uploadServerAvatar(token, serverId, file);
+			await refreshServersData();
+			serverAvatarUploadMessage = 'Server image uploaded.';
+		} catch (error) {
+			serverAvatarUploadError = error instanceof Error ? error.message : 'Failed to upload server image.';
+		} finally {
+			input.value = '';
+		}
+	};
+
+	const handleCreateChannelEmojiPicked = (event: Event) => {
+		const detail = (event as CustomEvent<{ unicode?: string }>).detail;
+		if (detail?.unicode) {
+			createChannelEmoji = detail.unicode;
+			createChannelEmojiPickerOpen = false;
+		}
 	};
 
 	const handleCreateChannel = async () => {
@@ -705,11 +811,161 @@
 			await loadServerChannels(serverId);
 			createChannelName = '';
 			createChannelEmoji = '💬';
+			createChannelEmojiPickerOpen = false;
 			createChannelModalOpen = false;
 		} catch (error) {
 			createChannelError = error instanceof Error ? error.message : 'Failed to create channel.';
 		} finally {
 			createChannelLoading = false;
+		}
+	};
+
+	const openUpdateChannelNameModal = () => {
+		channelSettingsMenuOpen = false;
+		if (!selectedChannel) {
+			return;
+		}
+
+		updateChannelNameValue = selectedChannel.name;
+		updateChannelNameError = null;
+		updateChannelNameModalOpen = true;
+	};
+
+	const openUpdateChannelEmojiModal = () => {
+		channelSettingsMenuOpen = false;
+		if (!selectedChannel) {
+			return;
+		}
+
+		updateChannelEmojiValue = selectedChannel.emoji;
+		updateChannelEmojiError = null;
+		updateChannelEmojiPickerOpen = false;
+		updateChannelEmojiModalOpen = true;
+	};
+
+	const handleUpdateChannelEmojiPicked = (event: Event) => {
+		const detail = (event as CustomEvent<{ unicode?: string }>).detail;
+		if (detail?.unicode) {
+			updateChannelEmojiValue = detail.unicode;
+			updateChannelEmojiPickerOpen = false;
+		}
+	};
+
+	const syncSelectedChannelFromCache = (serverId: string) => {
+		if (!selectedChannel) {
+			return;
+		}
+
+		const next = (serverChannels[serverId] ?? []).find((item) => item.id === selectedChannel?.id) ?? null;
+		if (next) {
+			selectedChannel = next;
+			return;
+		}
+
+		selectedChannel = null;
+		if (activeChat === 'server') {
+			activeChat = 'server-channels';
+			chatMessages = [];
+			chatInput = '';
+		}
+	};
+
+	const handleUpdateChannelName = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		const channelId = selectedChannel?.id;
+
+		if (!token || !serverId || !channelId || updateChannelNameLoading) {
+			return;
+		}
+
+		updateChannelNameError = null;
+		const name = updateChannelNameValue.trim();
+		if (!name) {
+			updateChannelNameError = 'Channel name is required.';
+			return;
+		}
+
+		if (name.length > 64) {
+			updateChannelNameError = 'Channel name must be at most 64 characters.';
+			return;
+		}
+
+		updateChannelNameLoading = true;
+		try {
+			await apiClient.updateChannel(token, channelId, name);
+			await loadServerChannels(serverId);
+			syncSelectedChannelFromCache(serverId);
+			updateChannelNameModalOpen = false;
+		} catch (error) {
+			updateChannelNameError = error instanceof Error ? error.message : 'Failed to update channel name.';
+		} finally {
+			updateChannelNameLoading = false;
+		}
+	};
+
+	const handleUpdateChannelEmoji = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		const channelId = selectedChannel?.id;
+
+		if (!token || !serverId || !channelId || updateChannelEmojiLoading) {
+			return;
+		}
+
+		updateChannelEmojiError = null;
+		const emoji = updateChannelEmojiValue.trim();
+		if (!emoji) {
+			updateChannelEmojiError = 'Emoji is required.';
+			return;
+		}
+
+		updateChannelEmojiLoading = true;
+		try {
+			await apiClient.updateChannel(token, channelId, undefined, emoji);
+			await loadServerChannels(serverId);
+			syncSelectedChannelFromCache(serverId);
+			updateChannelEmojiModalOpen = false;
+			updateChannelEmojiPickerOpen = false;
+		} catch (error) {
+			updateChannelEmojiError = error instanceof Error ? error.message : 'Failed to update channel logo.';
+		} finally {
+			updateChannelEmojiLoading = false;
+		}
+	};
+
+	const openDeleteChannelModal = () => {
+		channelSettingsMenuOpen = false;
+		deleteChannelError = null;
+		deleteChannelConfirmText = '';
+		deleteChannelModalOpen = true;
+	};
+
+	const handleDeleteChannel = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		const channelId = selectedChannel?.id;
+
+		if (!token || !serverId || !channelId || deleteChannelLoading) {
+			return;
+		}
+
+		deleteChannelError = null;
+		if (deleteChannelConfirmText !== 'DELETE') {
+			deleteChannelError = 'Confirm deletion by typing "DELETE".';
+			return;
+		}
+
+		deleteChannelLoading = true;
+		try {
+			await apiClient.deleteChannel(token, channelId);
+			await loadServerChannels(serverId);
+			syncSelectedChannelFromCache(serverId);
+			deleteChannelModalOpen = false;
+		} catch (error) {
+			deleteChannelError = error instanceof Error ? error.message : 'Failed to delete channel.';
+		} finally {
+			deleteChannelLoading = false;
 		}
 	};
 
@@ -939,6 +1195,8 @@
 
 		profileUploadError = null;
 		profileUploadMessage = null;
+		serverAvatarUploadError = null;
+		serverAvatarUploadMessage = null;
 
 		try {
 			await apiClient.uploadMyAvatar(token, file);
@@ -965,6 +1223,7 @@
 		dmThreadByFriendId = {};
 		friendByDmThreadId = {};
 		onlineUserIdsSnapshot = [];
+		channelSettingsMenuOpen = false;
 		addFriendModalOpen = false;
 		pendingModalOpen = false;
 		createServerModalOpen = false;
@@ -975,6 +1234,11 @@
 		updateServerVisibilityModalOpen = false;
 		deleteServerModalOpen = false;
 		friendSettingsMenuOpen = false;
+		updateChannelNameModalOpen = false;
+		updateChannelEmojiModalOpen = false;
+		deleteChannelModalOpen = false;
+		createChannelEmojiPickerOpen = false;
+		updateChannelEmojiPickerOpen = false;
 		addFriendUsername = '';
 		addFriendError = null;
 		addFriendMessage = null;
@@ -986,6 +1250,12 @@
 		createChannelName = '';
 		createChannelEmoji = '💬';
 		createChannelError = null;
+		updateChannelNameValue = '';
+		updateChannelNameError = null;
+		updateChannelEmojiValue = '💬';
+		updateChannelEmojiError = null;
+		deleteChannelError = null;
+		deleteChannelConfirmText = '';
 		updateServerNameValue = '';
 		updateServerNameError = null;
 		updateServerDescriptionValue = '';
@@ -1008,6 +1278,8 @@
 	};
 
 	onMount(() => {
+		void import('emoji-picker-element');
+
 		const handler = async (event: Event) => {
 			const custom = event as CustomEvent<{ kind: string; payload: unknown }>;
 			const kind = custom.detail?.kind;
@@ -1015,6 +1287,7 @@
 				id?: string;
 				thread_id?: string;
 				channel_id?: string;
+				server_id?: string;
 				user_id?: string;
 				online?: boolean;
 				online_user_ids?: string[];
@@ -1054,6 +1327,15 @@
 
 			if (kind === 'server.created' || kind === 'server.updated' || kind === 'server.deleted' || kind === 'server.joined') {
 				await refreshServersData();
+				return;
+			}
+
+			if (kind === 'channel.created' || kind === 'channel.updated' || kind === 'channel.deleted') {
+				const serverId = payload.server_id ?? $selectedServer?.id;
+				if (serverId) {
+					await loadServerChannels(serverId);
+					syncSelectedChannelFromCache(serverId);
+				}
 				return;
 			}
 
@@ -1118,6 +1400,10 @@
 
 			if (friendSettingsMenuOpen && friendSettingsMenuEl && target && !friendSettingsMenuEl.contains(target)) {
 				friendSettingsMenuOpen = false;
+			}
+
+			if (channelSettingsMenuOpen && channelSettingsMenuEl && target && !channelSettingsMenuEl.contains(target)) {
+				channelSettingsMenuOpen = false;
 			}
 		};
 
@@ -1394,6 +1680,7 @@
 						{#if serverSettingsMenuOpen}
 							<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
 								<li><button type="button" onclick={openCreateChannelModal}>Create channel</button></li>
+								<li><button type="button" onclick={handleOpenServerAvatarUpload}>Change server image</button></li>
 								<li><button type="button" onclick={openUpdateServerNameModal}>Rename server</button></li>
 								<li><button type="button" onclick={openUpdateServerDescriptionModal}>Edit server description</button></li>
 								<li><button type="button" onclick={openUpdateServerVisibilityModal}>Edit server visibility</button></li>
@@ -1402,6 +1689,17 @@
 						{/if}
 					</div>
 				</div>
+
+				{#if serverAvatarUploadError}
+					<div class="p-3 pb-0">
+						<div class="alert alert-error py-2 text-sm"><span>{serverAvatarUploadError}</span></div>
+					</div>
+				{/if}
+				{#if serverAvatarUploadMessage}
+					<div class="p-3 pb-0">
+						<div class="alert alert-success py-2 text-sm"><span>{serverAvatarUploadMessage}</span></div>
+					</div>
+				{/if}
 
 				<div class="flex-1 overflow-auto p-3">
 					{#if $selectedServer}
@@ -1430,7 +1728,7 @@
 		{:else}
 				<section class="h-full flex flex-col">
 					<div class="h-14 border-b border-slate-700/60 flex items-center justify-between px-4 bg-slate-800/40">
-						<button class="btn btn-sm btn-ghost" onclick={closeChat}>Back</button>
+						<button class="btn btn-sm btn-ghost" onclick={handleChatBack}>Back</button>
 						<p class="font-semibold truncate flex-1 text-center">
 							{#if activeChat === 'friend'}
 								{$selectedFriend?.username ?? 'Direct message'}
@@ -1453,6 +1751,26 @@
 								{#if friendSettingsMenuOpen}
 									<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
 										<li><button type="button" class="text-error" onclick={handleDeleteSelectedFriend}>Delete friend and conversation</button></li>
+									</ul>
+								{/if}
+							</div>
+						{:else if activeChat === 'server'}
+							<div class="relative" bind:this={channelSettingsMenuEl}>
+								<button
+									type="button"
+									class="btn btn-sm btn-circle btn-ghost text-xl leading-none"
+									onclick={() => {
+										channelSettingsMenuOpen = !channelSettingsMenuOpen;
+									}}
+								>
+									⚙
+								</button>
+
+								{#if channelSettingsMenuOpen}
+									<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
+										<li><button type="button" onclick={openUpdateChannelNameModal}>Rename channel</button></li>
+										<li><button type="button" onclick={openUpdateChannelEmojiModal}>Change channel logo</button></li>
+										<li><button type="button" class="text-error" onclick={openDeleteChannelModal}>Delete channel</button></li>
 									</ul>
 								{/if}
 							</div>
@@ -1513,6 +1831,14 @@
 				accept="image/png,image/jpeg"
 				class="hidden"
 				onchange={handleAvatarPicked}
+			/>
+
+			<input
+				bind:this={serverAvatarInputEl}
+				type="file"
+				accept="image/png,image/jpeg"
+				class="hidden"
+				onchange={handleServerAvatarPicked}
 			/>
 
 			{#if passwordModalOpen}
@@ -1695,8 +2021,23 @@
 
 						<label class="block w-full">
 							<span class="label-text block mb-2">Emoji</span>
-							<input class="input input-bordered w-full" bind:value={createChannelEmoji} maxlength="5" placeholder="e.g. 💬" />
+							<button
+								type="button"
+								class="btn btn-outline w-full justify-start"
+								onclick={() => {
+									createChannelEmojiPickerOpen = !createChannelEmojiPickerOpen;
+								}}
+							>
+								<span class="text-lg">{createChannelEmoji}</span>
+								<span class="text-slate-300">Select channel logo</span>
+							</button>
 						</label>
+
+						{#if createChannelEmojiPickerOpen}
+							<div class="rounded-md border border-slate-700 overflow-hidden bg-slate-950">
+								<emoji-picker onemoji-click={handleCreateChannelEmojiPicked}></emoji-picker>
+							</div>
+						{/if}
 
 						{#if createChannelError}
 							<div class="alert alert-error py-2 text-sm"><span>{createChannelError}</span></div>
@@ -1706,6 +2047,101 @@
 							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { createChannelModalOpen = false; }}>Cancel</button>
 							<button class="btn btn-sm btn-primary" type="button" disabled={createChannelLoading} onclick={handleCreateChannel}>
 								{createChannelLoading ? 'Creating...' : 'Create'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if updateChannelNameModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Rename channel</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { updateChannelNameModalOpen = false; }}>✕</button>
+						</div>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Channel name</span>
+							<input class="input input-bordered w-full" bind:value={updateChannelNameValue} maxlength="64" />
+						</label>
+
+						{#if updateChannelNameError}
+							<div class="alert alert-error py-2 text-sm"><span>{updateChannelNameError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { updateChannelNameModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={updateChannelNameLoading} onclick={handleUpdateChannelName}>
+								{updateChannelNameLoading ? 'Saving...' : 'Save'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if updateChannelEmojiModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Change channel logo</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { updateChannelEmojiModalOpen = false; }}>✕</button>
+						</div>
+
+						<button
+							type="button"
+							class="btn btn-outline w-full justify-start"
+							onclick={() => {
+								updateChannelEmojiPickerOpen = !updateChannelEmojiPickerOpen;
+							}}
+						>
+							<span class="text-lg">{updateChannelEmojiValue}</span>
+							<span class="text-slate-300">Select channel logo</span>
+						</button>
+
+						{#if updateChannelEmojiPickerOpen}
+							<div class="rounded-md border border-slate-700 overflow-hidden bg-slate-950">
+								<emoji-picker onemoji-click={handleUpdateChannelEmojiPicked}></emoji-picker>
+							</div>
+						{/if}
+
+						{#if updateChannelEmojiError}
+							<div class="alert alert-error py-2 text-sm"><span>{updateChannelEmojiError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { updateChannelEmojiModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={updateChannelEmojiLoading} onclick={handleUpdateChannelEmoji}>
+								{updateChannelEmojiLoading ? 'Saving...' : 'Save'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if deleteChannelModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold text-error">Delete channel</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { deleteChannelModalOpen = false; }}>✕</button>
+						</div>
+
+						<p class="text-sm text-slate-300">Are you sure you want to delete this channel? This cannot be undone.</p>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Type "DELETE" to confirm</span>
+							<input class="input input-bordered w-full" bind:value={deleteChannelConfirmText} placeholder="DELETE" />
+						</label>
+
+						{#if deleteChannelError}
+							<div class="alert alert-error py-2 text-sm"><span>{deleteChannelError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { deleteChannelModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-error" type="button" disabled={deleteChannelLoading || deleteChannelConfirmText !== 'DELETE'} onclick={handleDeleteChannel}>
+								{deleteChannelLoading ? 'Deleting...' : 'Delete'}
 							</button>
 						</div>
 					</div>

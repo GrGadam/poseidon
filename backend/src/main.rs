@@ -59,6 +59,8 @@ use utoipa_swagger_ui::SwaggerUi;
         routes::servers::remove_member,
         routes::servers::create_channel,
         routes::servers::list_channels,
+        routes::servers::upload_server_avatar,
+        routes::servers::get_server_avatar,
         routes::servers::update_channel,
         routes::servers::delete_channel,
         routes::channels::send_message,
@@ -194,6 +196,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/servers/{server_id}/channels",
             post(routes::servers::create_channel).get(routes::servers::list_channels),
+        )
+        .route(
+            "/servers/{server_id}/avatar",
+            post(routes::servers::upload_server_avatar).get(routes::servers::get_server_avatar),
         )
         .route(
             "/channels/{channel_id}",

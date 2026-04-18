@@ -96,6 +96,14 @@ export const apiClient = {
 		request<ChannelResponse[]>(`/servers/${encodeURIComponent(serverId)}/channels`, 'GET', undefined, accessToken),
 	createChannel: (accessToken: string, serverId: string, name: string, emoji: string) =>
 		request('/servers/' + encodeURIComponent(serverId) + '/channels', 'POST', { name, emoji }, accessToken),
+	updateChannel: (accessToken: string, channelId: string, name?: string, emoji?: string) => {
+		const body: Record<string, unknown> = {};
+		if (name !== undefined) body.name = name;
+		if (emoji !== undefined) body.emoji = emoji;
+		return request('/channels/' + encodeURIComponent(channelId), 'PATCH', body, accessToken);
+	},
+	deleteChannel: (accessToken: string, channelId: string) =>
+		request('/channels/' + encodeURIComponent(channelId), 'DELETE', undefined, accessToken),
 	updateServer: (accessToken: string, serverId: string, name?: string, description?: string, isPublic?: boolean) => {
 		const body: Record<string, unknown> = {};
 		if (name !== undefined) body.name = name;
@@ -124,6 +132,30 @@ export const apiClient = {
 		formData.append('avatar', file);
 
 		const res = await fetch(`${API_BASE_URL}/users/me/avatar`, {
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${accessToken}`
+			},
+			body: formData
+		});
+
+		if (!res.ok) {
+			let message = `Request failed (${res.status})`;
+			const contentType = res.headers.get('content-type') ?? '';
+			if (contentType.includes('application/json')) {
+				const body = (await res.json()) as { error?: string };
+				if (body.error) {
+					message = body.error;
+				}
+			}
+			throw new Error(message);
+		}
+	},
+	uploadServerAvatar: async (accessToken: string, serverId: string, file: File): Promise<void> => {
+		const formData = new FormData();
+		formData.append('avatar', file);
+
+		const res = await fetch(`${API_BASE_URL}/servers/${encodeURIComponent(serverId)}/avatar`, {
 			method: 'POST',
 			headers: {
 				Authorization: `Bearer ${accessToken}`

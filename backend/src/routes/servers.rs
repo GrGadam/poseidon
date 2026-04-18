@@ -1,4 +1,10 @@
-use axum::{extract::Path, extract::Query, extract::State, Json};
+use axum::{
+    body::Bytes,
+    extract::{Multipart, Path, Query, State},
+    http::{header, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use rand::{distr::Alphanumeric, Rng};
 use serde::Deserialize;
 use sqlx::Row;
@@ -542,6 +548,108 @@ pub async fn list_channels(
         .collect();
 
     Ok(Json(channels))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/servers/{server_id}/avatar",
+    responses((status = 200, body = OkResponse)),
+    params(("server_id" = String, Path, description = "Server id")),
+    security(("bearer_auth" = []))
+)]
+pub async fn upload_server_avatar(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(server_id): Path<String>,
+    mut multipart: Multipart,
+) -> Result<Json<OkResponse>, AppError> {
+    let role = get_role(&state, &user.user_id, &server_id).await?;
+    if role != "owner" {
+        return Err(AppError::Forbidden);
+    }
+
+    let mut avatar: Option<(Vec<u8>, String)> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::BadRequest("invalid multipart body".to_string()))?
+    {
+        if field.name() != Some("avatar") {
+            continue;
+        }
+
+        let mime = field
+            .content_type()
+            .map(ToString::to_string)
+            .ok_or(AppError::BadRequest("missing content type".to_string()))?;
+
+        if mime != "image/png" && mime != "image/jpeg" {
+            return Err(AppError::BadRequest("only png/jpeg is allowed".to_string()));
+        }
+
+        let data = field
+            .bytes()
+            .await
+            .map_err(|_| AppError::BadRequest("invalid file bytes".to_string()))?;
+
+        if data.is_empty() || data.len() > 5 * 1024 * 1024 {
+            return Err(AppError::BadRequest("file size must be 1B..5MB".to_string()));
+        }
+
+        avatar = Some((data.to_vec(), mime));
+        break;
+    }
+
+    let (blob, mime) = avatar.ok_or(AppError::BadRequest("avatar field is required".to_string()))?;
+
+    sqlx::query("UPDATE servers SET avatar_blob = ?, avatar_mime = ? WHERE id = ?")
+        .bind(blob)
+        .bind(mime)
+        .bind(&server_id)
+        .execute(&state.db)
+        .await?;
+
+    ws::emit(
+        &state,
+        "server.updated",
+        serde_json::json!({"server_id": server_id}),
+    );
+
+    Ok(Json(OkResponse { ok: true }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/servers/{server_id}/avatar",
+    responses((status = 200, description = "Raw server avatar bytes")),
+    params(("server_id" = String, Path, description = "Server id")),
+    security(("bearer_auth" = []))
+)]
+pub async fn get_server_avatar(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(server_id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let _ = get_role(&state, &user.user_id, &server_id).await?;
+
+    let row = sqlx::query("SELECT avatar_blob, avatar_mime FROM servers WHERE id = ?")
+        .bind(&server_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let mime: Option<String> = row.try_get("avatar_mime").ok();
+    let blob: Option<Vec<u8>> = row.try_get("avatar_blob").ok();
+
+    let mime = mime.ok_or(AppError::NotFound)?;
+    let blob = blob.ok_or(AppError::NotFound)?;
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, mime)],
+        Bytes::from(blob),
+    ))
 }
 
 #[utoipa::path(
