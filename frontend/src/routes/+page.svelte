@@ -139,9 +139,12 @@
 	let chatContainer = $state<HTMLDivElement | null>(null);
 
 	let serverChannels = $state<Record<string, ServerChannel[]>>({});
+	let channelUnreadByServer = $state<Record<string, Record<string, number>>>({});
 	let dmThreadByFriendId = $state<Record<string, string>>({});
 	let friendByDmThreadId = $state<Record<string, string>>({});
 	let onlineUserIdsSnapshot = $state<string[]>([]);
+	let leaveServerLoading = $state(false);
+	let leaveServerError = $state<string | null>(null);
 
 	const loadUserAvatarUrl = async (accessToken: string, userId: string): Promise<string | null> => {
 		const res = await fetch(`${apiConfig.baseUrl}/users/${encodeURIComponent(userId)}/avatar`, {
@@ -297,11 +300,19 @@
 			return;
 		}
 
+		leaveServerError = null;
 		const data = await apiClient.servers(token);
 
 		const previousServers = get(servers);
 		const previousById = new Map(previousServers.map((entry) => [entry.id, entry]));
 		const incomingIds = new Set(data.map((item) => item.id));
+		const selectedServerId = $selectedServer?.id ?? null;
+
+		for (const serverId of Object.keys(channelUnreadByServer)) {
+			if (!incomingIds.has(serverId)) {
+				delete channelUnreadByServer[serverId];
+			}
+		}
 
 		for (const entry of previousServers) {
 			if (!incomingIds.has(entry.id) && entry.avatarUrl?.startsWith('blob:')) {
@@ -314,6 +325,8 @@
 				const previous = previousById.get(item.id);
 				const previousAvatarUrl = previous?.avatarUrl ?? null;
 				const avatarUrl = await loadServerAvatarUrl(token, item.id);
+				const unreadForServer = channelUnreadByServer[item.id] ?? {};
+				const hasUnread = Object.values(unreadForServer).some((count) => count > 0);
 
 				if (
 					previousAvatarUrl &&
@@ -328,15 +341,95 @@
 					name: item.name,
 					description: item.description ?? '',
 					avatarUrl,
-					hasUnread: false,
+					hasUnread,
 					createdAt: item.created_at,
-					memberCount: item.member_count ?? undefined
+					memberCount: item.member_count ?? undefined,
+					memberRole: item.member_role ?? undefined
 				};
 			})
 		);
 
 		servers.set(nextServers);
+
+		if (selectedServerId) {
+			const refreshedSelected = nextServers.find((entry) => entry.id === selectedServerId) ?? null;
+			if (refreshedSelected) {
+				selectServer(refreshedSelected);
+			} else {
+				selectedServer.set(null);
+				activeChat = 'none';
+				selectedChannel = null;
+				chatMessages = [];
+				chatError = null;
+				chatInput = '';
+			}
+		}
 	};
+
+	const updateServerUnreadDot = (serverId: string) => {
+		const unreadByChannel = channelUnreadByServer[serverId] ?? {};
+		const hasUnread = Object.values(unreadByChannel).some((count) => count > 0);
+
+		servers.update((items) =>
+			items.map((item) => (item.id === serverId ? { ...item, hasUnread } : item))
+		);
+
+		if ($selectedServer?.id === serverId) {
+			selectServer({ ...$selectedServer, hasUnread });
+		}
+	};
+
+	const incrementChannelUnread = (serverId: string, channelId: string) => {
+		const byChannel = channelUnreadByServer[serverId] ?? {};
+		const current = byChannel[channelId] ?? 0;
+		channelUnreadByServer = {
+			...channelUnreadByServer,
+			[serverId]: {
+				...byChannel,
+				[channelId]: current + 1
+			}
+		};
+		updateServerUnreadDot(serverId);
+	};
+
+	const clearChannelUnread = (serverId: string, channelId: string) => {
+		const byChannel = channelUnreadByServer[serverId];
+		if (!byChannel || !byChannel[channelId]) {
+			return;
+		}
+
+		const nextByChannel = { ...byChannel };
+		delete nextByChannel[channelId];
+
+		if (Object.keys(nextByChannel).length === 0) {
+			const nextUnread = { ...channelUnreadByServer };
+			delete nextUnread[serverId];
+			channelUnreadByServer = nextUnread;
+		} else {
+			channelUnreadByServer = {
+				...channelUnreadByServer,
+				[serverId]: nextByChannel
+			};
+		}
+
+		updateServerUnreadDot(serverId);
+	};
+
+	const getChannelUnread = (serverId: string, channelId: string): number => {
+		return channelUnreadByServer[serverId]?.[channelId] ?? 0;
+	};
+
+	const selectedServerRole = (): 'owner' | 'moderator' | 'user' | null => {
+		const role = $selectedServer?.memberRole;
+		return role === 'owner' || role === 'moderator' || role === 'user' ? role : null;
+	};
+
+	const canManageSelectedServer = () => {
+		const role = selectedServerRole();
+		return role === 'owner' || role === 'moderator';
+	};
+
+	const canLeaveSelectedServer = () => selectedServerRole() === 'user';
 
 	const loadPublicServers = async () => {
 		const token = $session.accessToken;
@@ -676,6 +769,7 @@
 		selectServer(server);
 		activeChat = 'server-channels';
 		friendSettingsMenuOpen = false;
+		leaveServerError = null;
 		selectedChannel = null;
 		activeDmThreadId = null;
 		chatMessages = [];
@@ -690,6 +784,11 @@
 	};
 
 	const openServerChannelChat = async (channel: ServerChannel) => {
+		const serverId = $selectedServer?.id;
+		if (serverId) {
+			clearChannelUnread(serverId, channel.id);
+		}
+
 		selectedChannel = channel;
 		channelSettingsMenuOpen = false;
 		activeDmThreadId = null;
@@ -728,6 +827,37 @@
 	const backToServerList = () => {
 		activeChat = 'none';
 		channelSettingsMenuOpen = false;
+		leaveServerError = null;
+	};
+
+	const handleLeaveSelectedServer = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId || leaveServerLoading) {
+			return;
+		}
+
+		leaveServerLoading = true;
+		leaveServerError = null;
+
+		try {
+			await apiClient.leaveServer(token, serverId);
+			serverSettingsMenuOpen = false;
+			activeChat = 'none';
+			selectedChannel = null;
+			chatMessages = [];
+			chatError = null;
+			chatInput = '';
+			selectedServer.set(null);
+			await refreshServersData();
+			if (joinServerModalOpen) {
+				await loadPublicServers();
+			}
+		} catch (error) {
+			leaveServerError = error instanceof Error ? error.message : 'Failed to leave server.';
+		} finally {
+			leaveServerLoading = false;
+		}
 	};
 
 	const openAddFriendModal = () => {
@@ -1432,6 +1562,9 @@
 		joinServerTarget = null;
 		joinServerLoading = false;
 		joinServerMessage = null;
+		channelUnreadByServer = {};
+		leaveServerLoading = false;
+		leaveServerError = null;
 		createChannelName = '';
 		createChannelEmoji = '💬';
 		createChannelError = null;
@@ -1510,7 +1643,13 @@
 				return;
 			}
 
-			if (kind === 'server.created' || kind === 'server.updated' || kind === 'server.deleted' || kind === 'server.joined') {
+			if (
+				kind === 'server.created' ||
+				kind === 'server.updated' ||
+				kind === 'server.deleted' ||
+				kind === 'server.joined' ||
+				kind === 'server.left'
+			) {
 				await refreshServersData();
 				if (joinServerModalOpen) {
 					await loadPublicServers();
@@ -1519,6 +1658,10 @@
 			}
 
 			if (kind === 'channel.created' || kind === 'channel.updated' || kind === 'channel.deleted') {
+				if (kind === 'channel.deleted' && payload.server_id && payload.channel_id) {
+					clearChannelUnread(payload.server_id, payload.channel_id);
+				}
+
 				const serverId = payload.server_id ?? $selectedServer?.id;
 				if (serverId) {
 					await loadServerChannels(serverId);
@@ -1565,13 +1708,26 @@
 				return;
 			}
 
-			if (
-				(kind === 'channel.message.created' || kind === 'channel.message.updated' || kind === 'channel.message.deleted') &&
-				activeChat === 'server' &&
-				selectedChannel?.id &&
-				payload.channel_id === selectedChannel.id
-			) {
-				await loadActiveMessages({ silent: true, forceBottom: true });
+			if (kind === 'channel.message.created' || kind === 'channel.message.updated' || kind === 'channel.message.deleted') {
+				const isActiveChannel =
+					activeChat === 'server' &&
+					selectedChannel?.id &&
+					payload.channel_id === selectedChannel.id;
+
+				if (
+					kind === 'channel.message.created' &&
+					payload.user_id &&
+					payload.user_id !== $session.userId &&
+					payload.server_id &&
+					payload.channel_id &&
+					!isActiveChannel
+				) {
+					incrementChannelUnread(payload.server_id, payload.channel_id);
+				}
+
+				if (isActiveChannel) {
+					await loadActiveMessages({ silent: true, forceBottom: true });
+				}
 			}
 		};
 
@@ -1855,28 +2011,41 @@
 							Server
 						{/if}
 					</p>
-					<div class="relative" bind:this={serverSettingsMenuEl}>
-						<button
-							type="button"
-							class="btn btn-sm btn-circle btn-ghost text-xl leading-none"
-							onclick={() => {
-								serverSettingsMenuOpen = !serverSettingsMenuOpen;
-							}}
-						>
-							⚙
-						</button>
+					{#if $selectedServer && (canManageSelectedServer() || canLeaveSelectedServer())}
+						<div class="relative" bind:this={serverSettingsMenuEl}>
+							<button
+								type="button"
+								class="btn btn-sm btn-circle btn-ghost text-xl leading-none"
+								onclick={() => {
+									serverSettingsMenuOpen = !serverSettingsMenuOpen;
+								}}
+							>
+								⚙
+							</button>
 
-						{#if serverSettingsMenuOpen}
-							<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
-								<li><button type="button" onclick={openCreateChannelModal}>Create channel</button></li>
-								<li><button type="button" onclick={handleOpenServerAvatarUpload}>Change server image</button></li>
-								<li><button type="button" onclick={openUpdateServerNameModal}>Rename server</button></li>
-								<li><button type="button" onclick={openUpdateServerDescriptionModal}>Edit server description</button></li>
-								<li><button type="button" onclick={openUpdateServerVisibilityModal}>Edit server visibility</button></li>
-								<li><button type="button" class="text-error" onclick={openDeleteServerModal}>Delete server</button></li>
-							</ul>
-						{/if}
-					</div>
+							{#if serverSettingsMenuOpen}
+								<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
+									{#if canManageSelectedServer()}
+										<li><button type="button" onclick={openCreateChannelModal}>Create channel</button></li>
+										<li><button type="button" onclick={handleOpenServerAvatarUpload}>Change server image</button></li>
+										<li><button type="button" onclick={openUpdateServerNameModal}>Rename server</button></li>
+										<li><button type="button" onclick={openUpdateServerDescriptionModal}>Edit server description</button></li>
+										<li><button type="button" onclick={openUpdateServerVisibilityModal}>Edit server visibility</button></li>
+										<li><button type="button" class="text-error" onclick={openDeleteServerModal}>Delete server</button></li>
+									{/if}
+									{#if canLeaveSelectedServer()}
+										<li>
+											<button type="button" class="text-error" disabled={leaveServerLoading} onclick={() => void handleLeaveSelectedServer()}>
+												{leaveServerLoading ? 'Leaving...' : 'Leave server'}
+											</button>
+										</li>
+									{/if}
+								</ul>
+							{/if}
+						</div>
+					{:else}
+						<div class="w-10"></div>
+					{/if}
 				</div>
 
 				{#if serverAvatarUploadError}
@@ -1889,6 +2058,11 @@
 						<div class="alert alert-success py-2 text-sm"><span>{serverAvatarUploadMessage}</span></div>
 					</div>
 				{/if}
+				{#if leaveServerError}
+					<div class="p-3 pb-0">
+						<div class="alert alert-error py-2 text-sm"><span>{leaveServerError}</span></div>
+					</div>
+				{/if}
 
 				<div class="flex-1 overflow-auto p-3">
 					{#if $selectedServer}
@@ -1897,7 +2071,10 @@
 								{#each serverChannels[$selectedServer.id] ?? [] as channel}
 									<li>
 										<button type="button" onclick={() => openServerChannelChat(channel)}>
-											{channel.emoji} {channel.name}
+											<span>{channel.emoji} {channel.name}</span>
+											{#if getChannelUnread($selectedServer.id, channel.id) > 0}
+												<span class="badge badge-secondary ml-auto">{getChannelUnread($selectedServer.id, channel.id)}</span>
+											{/if}
 										</button>
 									</li>
 								{/each}
@@ -1943,7 +2120,7 @@
 									</ul>
 								{/if}
 							</div>
-						{:else if activeChat === 'server'}
+						{:else if activeChat === 'server' && canManageSelectedServer()}
 							<div class="relative" bind:this={channelSettingsMenuEl}>
 								<button
 									type="button"

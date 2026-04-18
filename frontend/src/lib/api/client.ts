@@ -40,6 +40,7 @@ export type ServerResponse = {
 	is_public: boolean;
 	created_at: number;
 	member_count?: number | null;
+	member_role?: 'owner' | 'moderator' | 'user' | null;
 };
 
 async function request<T>(
@@ -116,6 +117,8 @@ export const apiClient = {
 	},
 	joinPublicServer: (accessToken: string, serverId: string) =>
 		request(`/servers/${encodeURIComponent(serverId)}/join`, 'POST', undefined, accessToken),
+	leaveServer: (accessToken: string, serverId: string) =>
+		request(`/servers/${encodeURIComponent(serverId)}/leave`, 'POST', undefined, accessToken),
 	serverChannels: (accessToken: string, serverId: string) =>
 		request<ChannelResponse[]>(`/servers/${encodeURIComponent(serverId)}/channels`, 'GET', undefined, accessToken),
 	createChannel: (accessToken: string, serverId: string, name: string, emoji: string) =>

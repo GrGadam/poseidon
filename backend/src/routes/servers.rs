@@ -107,6 +107,7 @@ pub async fn create_server(
         is_public: payload.is_public,
         created_at: now,
         member_count: Some(1),
+        member_role: Some("owner".to_string()),
     }))
 }
 
@@ -122,6 +123,7 @@ pub async fn list_user_servers(
 ) -> Result<Json<Vec<ServerDto>>, AppError> {
     let rows = sqlx::query(
         "SELECT s.id, s.name, s.description, s.owner_id, s.is_public, s.created_at,
+            m.role as member_role,
             (SELECT COUNT(*) FROM server_members sm WHERE sm.server_id = s.id) as member_count
          FROM servers s
          JOIN server_members m ON m.server_id = s.id
@@ -141,6 +143,7 @@ pub async fn list_user_servers(
             is_public: r.get("is_public"),
             created_at: r.get("created_at"),
             member_count: r.try_get("member_count").ok(),
+            member_role: r.try_get("member_role").ok(),
         })
         .collect();
 
@@ -285,6 +288,7 @@ pub async fn list_public_servers(
             is_public: r.get("is_public"),
             created_at: r.get("created_at"),
             member_count: r.try_get("member_count").ok(),
+            member_role: None,
         })
         .collect();
 

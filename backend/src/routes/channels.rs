@@ -60,6 +60,13 @@ pub async fn send_message(
 
     assert_channel_membership(&state, &user.user_id, &channel_id).await?;
 
+    let channel = sqlx::query("SELECT server_id FROM channels WHERE id = ?")
+        .bind(&channel_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let server_id: String = channel.get("server_id");
+
     let id = Uuid::new_v4().to_string();
     let now = OffsetDateTime::now_utc().unix_timestamp();
 
@@ -77,7 +84,7 @@ pub async fn send_message(
     ws::emit(
         &state,
         "channel.message.created",
-        serde_json::json!({"id": id, "channel_id": channel_id, "user_id": user.user_id}),
+        serde_json::json!({"id": id, "server_id": server_id, "channel_id": channel_id, "user_id": user.user_id}),
     );
 
     Ok(Json(MessageDto {

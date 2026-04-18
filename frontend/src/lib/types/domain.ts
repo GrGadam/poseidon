@@ -19,6 +19,7 @@ export type ServerEntry = {
 	hasUnread: boolean;
 	createdAt?: number;
 	memberCount?: number;
+	memberRole?: 'owner' | 'moderator' | 'user';
 };
 
 export type AuthSession = {
