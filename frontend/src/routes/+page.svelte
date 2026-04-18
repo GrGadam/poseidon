@@ -98,6 +98,7 @@
 	let profileUploadError = $state<string | null>(null);
 	let serverAvatarUploadMessage = $state<string | null>(null);
 	let serverAvatarUploadError = $state<string | null>(null);
+	let serverAvatarMessageTimeout = $state<ReturnType<typeof setTimeout> | null>(null);
 	let passwordModalOpen = $state(false);
 	let currentPasswordInput = $state('');
 	let newPasswordInput = $state('');
@@ -758,11 +759,19 @@
 
 		serverAvatarUploadError = null;
 		serverAvatarUploadMessage = null;
+		if (serverAvatarMessageTimeout) {
+			clearTimeout(serverAvatarMessageTimeout);
+			serverAvatarMessageTimeout = null;
+		}
 
 		try {
 			await apiClient.uploadServerAvatar(token, serverId, file);
 			await refreshServersData();
 			serverAvatarUploadMessage = 'Server image uploaded.';
+			serverAvatarMessageTimeout = setTimeout(() => {
+				serverAvatarUploadMessage = null;
+				serverAvatarMessageTimeout = null;
+			}, 3000);
 		} catch (error) {
 			serverAvatarUploadError = error instanceof Error ? error.message : 'Failed to upload server image.';
 		} finally {
@@ -1197,6 +1206,10 @@
 		profileUploadMessage = null;
 		serverAvatarUploadError = null;
 		serverAvatarUploadMessage = null;
+		if (serverAvatarMessageTimeout) {
+			clearTimeout(serverAvatarMessageTimeout);
+			serverAvatarMessageTimeout = null;
+		}
 
 		try {
 			await apiClient.uploadMyAvatar(token, file);
