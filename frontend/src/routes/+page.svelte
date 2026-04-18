@@ -380,6 +380,11 @@
 	};
 
 	const incrementChannelUnread = (serverId: string, channelId: string) => {
+		const isMember = get(servers).some((entry) => entry.id === serverId);
+		if (!isMember) {
+			return;
+		}
+
 		const byChannel = channelUnreadByServer[serverId] ?? {};
 		const current = byChannel[channelId] ?? 0;
 		channelUnreadByServer = {
@@ -923,6 +928,11 @@
 
 		try {
 			await apiClient.joinPublicServer(token, server.id);
+			if (channelUnreadByServer[server.id]) {
+				const nextUnread = { ...channelUnreadByServer };
+				delete nextUnread[server.id];
+				channelUnreadByServer = nextUnread;
+			}
 			await refreshServersData();
 			await loadPublicServers();
 			joinServerMessage = `Joined ${server.name}.`;
@@ -1650,6 +1660,14 @@
 				kind === 'server.joined' ||
 				kind === 'server.left'
 			) {
+				if (kind === 'server.joined' && payload.user_id === $session.userId && payload.server_id) {
+					if (channelUnreadByServer[payload.server_id]) {
+						const nextUnread = { ...channelUnreadByServer };
+						delete nextUnread[payload.server_id];
+						channelUnreadByServer = nextUnread;
+					}
+				}
+
 				await refreshServersData();
 				if (joinServerModalOpen) {
 					await loadPublicServers();
