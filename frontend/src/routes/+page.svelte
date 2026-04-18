@@ -5,7 +5,8 @@
 		ChannelMessageResponse,
 		ChannelResponse,
 		DmMessageResponse,
-		DmThreadResponse
+		DmThreadResponse,
+		ServerResponse
 	} from '$lib/api/client';
 	import { apiClient, apiConfig } from '$lib/api/client';
 	import { login, logout, register, session } from '$lib/stores/auth';
@@ -41,12 +42,24 @@
 	let addFriendModalOpen = $state(false);
 	let pendingModalOpen = $state(false);
 	let createServerModalOpen = $state(false);
+	let joinServerModalOpen = $state(false);
+	let publicServersLoading = $state(false);
+	let publicServersError = $state<string | null>(null);
+	let publicServersSearch = $state('');
+	type PublicServerSort = 'newest' | 'oldest' | 'most-members' | 'fewest-members' | 'name-asc' | 'name-desc';
+	let publicServersSort = $state<PublicServerSort>('newest');
+	let publicServers = $state<ServerEntry[]>([]);
+	let joinServerConfirmModalOpen = $state(false);
+	let joinServerTarget = $state<ServerEntry | null>(null);
+	let joinServerLoading = $state(false);
+	let joinServerMessage = $state<string | null>(null);
 	let addFriendUsername = $state('');
 	let addFriendMessage = $state<string | null>(null);
 	let addFriendError = $state<string | null>(null);
 	let createServerName = $state('');
 	let createServerDescription = $state('');
 	let createServerIsPublic = $state(true);
+	let createServerAvatarFile = $state<File | null>(null);
 	let createServerError = $state<string | null>(null);
 	let createServerMessage = $state<string | null>(null);
 	let createServerLoading = $state(false);
@@ -132,6 +145,7 @@
 
 	const loadUserAvatarUrl = async (accessToken: string, userId: string): Promise<string | null> => {
 		const res = await fetch(`${apiConfig.baseUrl}/users/${encodeURIComponent(userId)}/avatar`, {
+			cache: 'no-store',
 			headers: {
 				Authorization: `Bearer ${accessToken}`
 			}
@@ -151,6 +165,7 @@
 
 	const loadServerAvatarUrl = async (accessToken: string, serverId: string): Promise<string | null> => {
 		const res = await fetch(`${apiConfig.baseUrl}/servers/${encodeURIComponent(serverId)}/avatar`, {
+			cache: 'no-store',
 			headers: {
 				Authorization: `Bearer ${accessToken}`
 			}
@@ -282,12 +297,7 @@
 			return;
 		}
 
-		const data = (await apiClient.servers(token)) as Array<{
-			id: string;
-			name: string;
-			description?: string | null;
-			owner_id: string;
-		}>;
+		const data = await apiClient.servers(token);
 
 		const previousServers = get(servers);
 		const previousById = new Map(previousServers.map((entry) => [entry.id, entry]));
@@ -303,10 +313,7 @@
 			data.map(async (item) => {
 				const previous = previousById.get(item.id);
 				const previousAvatarUrl = previous?.avatarUrl ?? null;
-				let avatarUrl = await loadServerAvatarUrl(token, item.id);
-				if (!avatarUrl) {
-					avatarUrl = await loadUserAvatarUrl(token, item.owner_id);
-				}
+				const avatarUrl = await loadServerAvatarUrl(token, item.id);
 
 				if (
 					previousAvatarUrl &&
@@ -321,12 +328,71 @@
 					name: item.name,
 					description: item.description ?? '',
 					avatarUrl,
-					hasUnread: false
+					hasUnread: false,
+					createdAt: item.created_at,
+					memberCount: item.member_count ?? undefined
 				};
 			})
 		);
 
 		servers.set(nextServers);
+	};
+
+	const loadPublicServers = async () => {
+		const token = $session.accessToken;
+		if (!token || !joinServerModalOpen) {
+			return;
+		}
+
+		publicServersLoading = true;
+		publicServersError = null;
+		joinServerMessage = null;
+
+		try {
+			const data = await apiClient.publicServers(token, publicServersSearch, publicServersSort);
+
+			const previousById = new Map(publicServers.map((item) => [item.id, item]));
+			const incomingIds = new Set(data.map((item) => item.id));
+
+			for (const entry of publicServers) {
+				if (!incomingIds.has(entry.id) && entry.avatarUrl?.startsWith('blob:')) {
+					URL.revokeObjectURL(entry.avatarUrl);
+				}
+			}
+
+			const nextPublicServers = await Promise.all(
+				data.map(async (item: ServerResponse) => {
+					const previous = previousById.get(item.id);
+					const previousAvatarUrl = previous?.avatarUrl ?? null;
+
+					const avatarUrl = await loadServerAvatarUrl(token, item.id);
+
+					if (
+						previousAvatarUrl &&
+						previousAvatarUrl.startsWith('blob:') &&
+						previousAvatarUrl !== avatarUrl
+					) {
+						URL.revokeObjectURL(previousAvatarUrl);
+					}
+
+					return {
+						id: item.id,
+						name: item.name,
+						description: item.description ?? '',
+						avatarUrl,
+						hasUnread: false,
+						createdAt: item.created_at,
+						memberCount: item.member_count ?? undefined
+					};
+				})
+			);
+
+			publicServers = nextPublicServers;
+		} catch (error) {
+			publicServersError = error instanceof Error ? error.message : 'Failed to load public servers.';
+		} finally {
+			publicServersLoading = false;
+		}
 	};
 
 	const toChatMessage = (item: DmMessageResponse | ChannelMessageResponse): ChatMessage => ({
@@ -679,6 +745,79 @@
 		createServerModalOpen = true;
 		createServerError = null;
 		createServerMessage = null;
+		createServerAvatarFile = null;
+	};
+
+	const closeCreateServerModal = () => {
+		createServerModalOpen = false;
+		createServerAvatarFile = null;
+	};
+
+	const openJoinServerModal = async () => {
+		joinServerModalOpen = true;
+		publicServersError = null;
+		joinServerMessage = null;
+		await loadPublicServers();
+	};
+
+	const closeJoinServerModal = () => {
+		for (const item of publicServers) {
+			if (item.avatarUrl?.startsWith('blob:')) {
+				URL.revokeObjectURL(item.avatarUrl);
+			}
+		}
+
+		joinServerModalOpen = false;
+		joinServerConfirmModalOpen = false;
+		joinServerTarget = null;
+		publicServersError = null;
+		joinServerMessage = null;
+		publicServers = [];
+	};
+
+	const openJoinServerConfirmModal = (server: ServerEntry) => {
+		joinServerTarget = server;
+		joinServerConfirmModalOpen = true;
+	};
+
+	const handleJoinServer = async () => {
+		const token = $session.accessToken;
+		const server = joinServerTarget;
+		if (!token || !server || joinServerLoading) {
+			return;
+		}
+
+		joinServerLoading = true;
+		publicServersError = null;
+		joinServerMessage = null;
+
+		try {
+			await apiClient.joinPublicServer(token, server.id);
+			await refreshServersData();
+			await loadPublicServers();
+			joinServerMessage = `Joined ${server.name}.`;
+			joinServerConfirmModalOpen = false;
+			joinServerTarget = null;
+		} catch (error) {
+			publicServersError = error instanceof Error ? error.message : 'Failed to join server.';
+		} finally {
+			joinServerLoading = false;
+		}
+	};
+
+	const handlePublicServersSearchSubmit = async () => {
+		await loadPublicServers();
+	};
+
+	const handlePublicServersSortChange = async (event: Event) => {
+		const nextSort = (event.currentTarget as HTMLSelectElement).value as PublicServerSort;
+		publicServersSort = nextSort;
+		await loadPublicServers();
+	};
+
+	const handleCreateServerAvatarPicked = (event: Event) => {
+		const input = event.currentTarget as HTMLInputElement;
+		createServerAvatarFile = input.files?.[0] ?? null;
 	};
 
 	const handleCreateServer = async () => {
@@ -705,12 +844,28 @@
 
 		createServerLoading = true;
 		try {
-			await apiClient.createServer(token, name, description, createServerIsPublic);
+			const createdServer = await apiClient.createServer(token, name, description, createServerIsPublic);
+
+			let uploadWarning: string | null = null;
+			if (createServerAvatarFile) {
+				try {
+					await apiClient.uploadServerAvatar(token, createdServer.id, createServerAvatarFile);
+				} catch (error) {
+					uploadWarning =
+						error instanceof Error
+							? error.message
+							: 'Server created, but image upload failed. You can upload it later from server settings.';
+				}
+			}
+
 			await refreshServersData();
-			createServerMessage = 'Server created successfully.';
+			createServerMessage = uploadWarning
+				? `Server created, but image upload failed: ${uploadWarning}`
+				: 'Server created successfully.';
 			createServerName = '';
 			createServerDescription = '';
 			createServerIsPublic = true;
+			createServerAvatarFile = null;
 			createServerModalOpen = false;
 		} catch (error) {
 			createServerError = error instanceof Error ? error.message : 'Failed to create server.';
@@ -1226,6 +1381,12 @@
 	};
 
 	const handleLogout = () => {
+		for (const item of publicServers) {
+			if (item.avatarUrl?.startsWith('blob:')) {
+				URL.revokeObjectURL(item.avatarUrl);
+			}
+		}
+
 		settingsMenuOpen = false;
 		activeChat = 'none';
 		selectedChannel = null;
@@ -1240,6 +1401,8 @@
 		addFriendModalOpen = false;
 		pendingModalOpen = false;
 		createServerModalOpen = false;
+		joinServerModalOpen = false;
+		joinServerConfirmModalOpen = false;
 		createChannelModalOpen = false;
 		serverSettingsMenuOpen = false;
 		updateServerNameModalOpen = false;
@@ -1258,8 +1421,17 @@
 		createServerName = '';
 		createServerDescription = '';
 		createServerIsPublic = true;
+		createServerAvatarFile = null;
 		createServerError = null;
 		createServerMessage = null;
+		publicServers = [];
+		publicServersLoading = false;
+		publicServersError = null;
+		publicServersSearch = '';
+		publicServersSort = 'newest';
+		joinServerTarget = null;
+		joinServerLoading = false;
+		joinServerMessage = null;
 		createChannelName = '';
 		createChannelEmoji = '💬';
 		createChannelError = null;
@@ -1340,6 +1512,9 @@
 
 			if (kind === 'server.created' || kind === 'server.updated' || kind === 'server.deleted' || kind === 'server.joined') {
 				await refreshServersData();
+				if (joinServerModalOpen) {
+					await loadPublicServers();
+				}
 				return;
 			}
 
@@ -1631,8 +1806,9 @@
 							{/each}
 						</ul>
 					{:else}
-						<div class="mb-3">
-							<button class="btn btn-primary btn-sm w-full" type="button" onclick={openCreateServerModal}>+ Create server</button>
+						<div class="mb-3 flex gap-1">
+							<button class="btn btn-primary btn-sm flex-1" type="button" onclick={openCreateServerModal}>Create server</button>
+							<button class="btn btn-primary btn-sm flex-1" type="button" onclick={() => void openJoinServerModal()}>Join a server</button>
 						</div>
 
 						{#if createServerError}
@@ -1982,12 +2158,102 @@
 				</div>
 			{/if}
 
+			{#if joinServerModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-2xl rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3 max-h-[85vh] overflow-hidden flex flex-col">
+						<div class="h-10 flex items-center justify-between">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={closeJoinServerModal}>Back</button>
+							<p class="font-semibold flex-1 text-center">Public servers</p>
+							<div class="w-16"></div>
+						</div>
+
+						<form
+							class="join w-full"
+							onsubmit={(event) => {
+								event.preventDefault();
+								void handlePublicServersSearchSubmit();
+							}}
+						>
+							<input
+								class="input input-bordered join-item flex-1"
+								placeholder="Search public servers by name..."
+								bind:value={publicServersSearch}
+							/>
+							<button class="btn btn-primary join-item" type="submit" disabled={publicServersLoading}>Search</button>
+						</form>
+
+						<select class="select select-bordered w-full" bind:value={publicServersSort} onchange={(event) => void handlePublicServersSortChange(event)}>
+							<option value="newest">Newest first</option>
+							<option value="oldest">Oldest first</option>
+							<option value="most-members">Most members</option>
+							<option value="fewest-members">Fewest members</option>
+							<option value="name-asc">Name (A-Z)</option>
+							<option value="name-desc">Name (Z-A)</option>
+						</select>
+
+						{#if publicServersError}
+							<div class="alert alert-error py-2 text-sm"><span>{publicServersError}</span></div>
+						{/if}
+						{#if joinServerMessage}
+							<div class="alert alert-success py-2 text-sm"><span>{joinServerMessage}</span></div>
+						{/if}
+
+						<div class="flex-1 overflow-auto rounded-md border border-slate-700/60 bg-slate-800/30 p-2">
+							{#if publicServersLoading}
+								<p class="text-sm text-slate-400 p-2">Loading public servers...</p>
+							{:else if publicServers.length === 0}
+								<p class="text-sm text-slate-400 p-2">No matching public servers.</p>
+							{:else}
+								<ul class="menu rounded-box w-full">
+									{#each publicServers as item}
+										<li>
+											<div class="flex items-center gap-3">
+												<div class="avatar">
+													<div class="w-9 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
+														{#if item.avatarUrl}
+															<img src={item.avatarUrl} alt={`${item.name} avatar`} class="h-full w-full object-cover" />
+														{:else}
+															<span class="text-xs font-semibold">{item.name.slice(0, 1).toUpperCase()}</span>
+														{/if}
+													</div>
+												</div>
+												<div class="flex-1 min-w-0">
+													<p class="font-medium truncate">{item.name}</p>
+													<p class="text-xs text-slate-400 truncate">{item.description || 'No MOTD set.'}</p>
+													<p class="text-[11px] text-slate-500 truncate">{item.memberCount ?? 0} members</p>
+												</div>
+												<button class="btn btn-xs btn-primary" type="button" onclick={() => openJoinServerConfirmModal(item)}>+</button>
+											</div>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if joinServerConfirmModalOpen && joinServerTarget}
+				<div class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+					<div class="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<h3 class="font-semibold">Join server</h3>
+						<p class="text-sm text-slate-300">Do you want to join {joinServerTarget.name}?</p>
+						<div class="flex justify-end gap-2">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { joinServerConfirmModalOpen = false; joinServerTarget = null; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={joinServerLoading} onclick={() => void handleJoinServer()}>
+								{joinServerLoading ? 'Joining...' : 'Join'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
 			{#if createServerModalOpen}
 				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
 					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
 						<div class="flex items-center justify-between">
 							<h3 class="font-semibold">Create server</h3>
-							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { createServerModalOpen = false; }}>✕</button>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={closeCreateServerModal}>✕</button>
 						</div>
 
 						<label class="block w-full">
@@ -2005,12 +2271,25 @@
 							<span class="label-text">Public server</span>
 						</label>
 
+						<label class="block w-full">
+							<span class="label-text block mb-2">Server image (optional)</span>
+							<input
+								class="file-input file-input-bordered w-full"
+								type="file"
+								accept="image/png,image/jpeg"
+								onchange={handleCreateServerAvatarPicked}
+							/>
+							{#if createServerAvatarFile}
+								<p class="mt-2 text-xs text-slate-400 truncate">Selected: {createServerAvatarFile.name}</p>
+							{/if}
+						</label>
+
 						{#if createServerError}
 							<div class="alert alert-error py-2 text-sm"><span>{createServerError}</span></div>
 						{/if}
 
 						<div class="flex gap-2 justify-end">
-							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { createServerModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-ghost" type="button" onclick={closeCreateServerModal}>Cancel</button>
 							<button class="btn btn-sm btn-primary" type="button" disabled={createServerLoading} onclick={handleCreateServer}>
 								{createServerLoading ? 'Creating...' : 'Create'}
 							</button>

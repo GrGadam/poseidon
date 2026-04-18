@@ -74,6 +74,7 @@ pub struct ServerDto {
     pub owner_id: String,
     pub is_public: bool,
     pub created_at: i64,
+    pub member_count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

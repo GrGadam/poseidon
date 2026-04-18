@@ -32,6 +32,16 @@ export type ChannelMessageResponse = {
 	created_at: number;
 };
 
+export type ServerResponse = {
+	id: string;
+	name: string;
+	description?: string | null;
+	owner_id: string;
+	is_public: boolean;
+	created_at: number;
+	member_count?: number | null;
+};
+
 async function request<T>(
 	path: string,
 	method: string,
@@ -90,8 +100,22 @@ export const apiClient = {
 	deleteFriend: (accessToken: string, friendUserId: string) =>
 		request(`/friends/${encodeURIComponent(friendUserId)}`, 'DELETE', undefined, accessToken),
 	createServer: (accessToken: string, name: string, description: string, isPublic: boolean) =>
-		request('/servers', 'POST', { name, description, is_public: isPublic }, accessToken),
-	servers: (accessToken: string) => request('/servers', 'GET', undefined, accessToken),
+		request<ServerResponse>('/servers', 'POST', { name, description, is_public: isPublic }, accessToken),
+	servers: (accessToken: string) => request<ServerResponse[]>('/servers', 'GET', undefined, accessToken),
+	publicServers: (accessToken: string, query?: string, sort?: string) => {
+		const searchParams = new URLSearchParams();
+		if (query?.trim()) {
+			searchParams.set('query', query.trim());
+		}
+		if (sort?.trim()) {
+			searchParams.set('sort', sort.trim());
+		}
+
+		const suffix = searchParams.toString();
+		return request<ServerResponse[]>(`/servers/public${suffix ? `?${suffix}` : ''}`, 'GET', undefined, accessToken);
+	},
+	joinPublicServer: (accessToken: string, serverId: string) =>
+		request(`/servers/${encodeURIComponent(serverId)}/join`, 'POST', undefined, accessToken),
 	serverChannels: (accessToken: string, serverId: string) =>
 		request<ChannelResponse[]>(`/servers/${encodeURIComponent(serverId)}/channels`, 'GET', undefined, accessToken),
 	createChannel: (accessToken: string, serverId: string, name: string, emoji: string) =>

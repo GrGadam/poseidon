@@ -17,6 +17,8 @@ export type ServerEntry = {
 	avatarMime?: string | null;
 	avatarUrl?: string | null;
 	hasUnread: boolean;
+	createdAt?: number;
+	memberCount?: number;
 };
 
 export type AuthSession = {

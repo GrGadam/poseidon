@@ -26,6 +26,7 @@ use crate::{
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ServerSearchQuery {
     pub query: Option<String>,
+    pub sort: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -105,6 +106,7 @@ pub async fn create_server(
         owner_id: user.user_id,
         is_public: payload.is_public,
         created_at: now,
+        member_count: Some(1),
     }))
 }
 
@@ -119,7 +121,8 @@ pub async fn list_user_servers(
     user: AuthUser,
 ) -> Result<Json<Vec<ServerDto>>, AppError> {
     let rows = sqlx::query(
-        "SELECT s.id, s.name, s.description, s.owner_id, s.is_public, s.created_at
+        "SELECT s.id, s.name, s.description, s.owner_id, s.is_public, s.created_at,
+            (SELECT COUNT(*) FROM server_members sm WHERE sm.server_id = s.id) as member_count
          FROM servers s
          JOIN server_members m ON m.server_id = s.id
          WHERE m.user_id = ?",
@@ -137,6 +140,7 @@ pub async fn list_user_servers(
             owner_id: r.get("owner_id"),
             is_public: r.get("is_public"),
             created_at: r.get("created_at"),
+            member_count: r.try_get("member_count").ok(),
         })
         .collect();
 
@@ -227,24 +231,49 @@ pub async fn delete_server(
 #[utoipa::path(
     get,
     path = "/api/v1/servers/public",
-    params(("query" = Option<String>, Query, description = "Search text")),
+    params(
+        ("query" = Option<String>, Query, description = "Search text"),
+        ("sort" = Option<String>, Query, description = "Sort key: newest, oldest, most-members, fewest-members, name-asc, name-desc")
+    ),
     responses((status = 200, body = Vec<ServerDto>)),
     security(("bearer_auth" = []))
 )]
 pub async fn list_public_servers(
     State(state): State<AppState>,
     Query(q): Query<ServerSearchQuery>,
-    _user: AuthUser,
+    user: AuthUser,
 ) -> Result<Json<Vec<ServerDto>>, AppError> {
     let search = format!("%{}%", q.query.unwrap_or_default());
-    let rows = sqlx::query(
-        "SELECT id, name, description, owner_id, is_public, created_at
-         FROM servers
-         WHERE is_public = 1 AND name LIKE ?",
-    )
-    .bind(search)
-    .fetch_all(&state.db)
-    .await?;
+    let sort_key = q.sort.unwrap_or_else(|| "newest".to_string());
+    let order_by = match sort_key.as_str() {
+        "oldest" => "s.created_at ASC",
+        "most-members" => "member_count DESC, s.created_at DESC",
+        "fewest-members" => "member_count ASC, s.created_at DESC",
+        "name-asc" => "s.name COLLATE NOCASE ASC",
+        "name-desc" => "s.name COLLATE NOCASE DESC",
+        _ => "s.created_at DESC",
+    };
+
+    let query = format!(
+        "SELECT s.id, s.name, s.description, s.owner_id, s.is_public, s.created_at,
+                (SELECT COUNT(*) FROM server_members sm WHERE sm.server_id = s.id) as member_count
+         FROM servers s
+         WHERE s.is_public = 1
+           AND s.name LIKE ?
+           AND NOT EXISTS (
+               SELECT 1
+               FROM server_members m
+               WHERE m.server_id = s.id AND m.user_id = ?
+           )
+         ORDER BY {}",
+        order_by
+    );
+
+    let rows = sqlx::query(&query)
+        .bind(search)
+        .bind(user.user_id)
+        .fetch_all(&state.db)
+        .await?;
 
     let data = rows
         .into_iter()
@@ -255,6 +284,7 @@ pub async fn list_public_servers(
             owner_id: r.get("owner_id"),
             is_public: r.get("is_public"),
             created_at: r.get("created_at"),
+            member_count: r.try_get("member_count").ok(),
         })
         .collect();
 
@@ -631,13 +661,16 @@ pub async fn get_server_avatar(
     user: AuthUser,
     Path(server_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let _ = get_role(&state, &user.user_id, &server_id).await?;
-
-    let row = sqlx::query("SELECT avatar_blob, avatar_mime FROM servers WHERE id = ?")
+    let row = sqlx::query("SELECT is_public, avatar_blob, avatar_mime FROM servers WHERE id = ?")
         .bind(&server_id)
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::NotFound)?;
+
+    let is_public: bool = row.get("is_public");
+    if !is_public {
+        let _ = get_role(&state, &user.user_id, &server_id).await?;
+    }
 
     let mime: Option<String> = row.try_get("avatar_mime").ok();
     let blob: Option<Vec<u8>> = row.try_get("avatar_blob").ok();
@@ -647,7 +680,15 @@ pub async fn get_server_avatar(
 
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, mime)],
+        [
+            (header::CONTENT_TYPE, mime),
+            (
+                header::CACHE_CONTROL,
+                "no-store, no-cache, must-revalidate, max-age=0".to_string(),
+            ),
+            (header::PRAGMA, "no-cache".to_string()),
+            (header::EXPIRES, "0".to_string()),
+        ],
         Bytes::from(blob),
     ))
 }
