@@ -87,9 +87,24 @@ export const apiClient = {
 		request(`/friends/requests/${requestId}/accept`, 'POST', undefined, accessToken),
 	rejectFriendRequest: (accessToken: string, requestId: string) =>
 		request(`/friends/requests/${requestId}`, 'DELETE', undefined, accessToken),
+	deleteFriend: (accessToken: string, friendUserId: string) =>
+		request(`/friends/${encodeURIComponent(friendUserId)}`, 'DELETE', undefined, accessToken),
+	createServer: (accessToken: string, name: string, description: string, isPublic: boolean) =>
+		request('/servers', 'POST', { name, description, is_public: isPublic }, accessToken),
 	servers: (accessToken: string) => request('/servers', 'GET', undefined, accessToken),
 	serverChannels: (accessToken: string, serverId: string) =>
 		request<ChannelResponse[]>(`/servers/${encodeURIComponent(serverId)}/channels`, 'GET', undefined, accessToken),
+	createChannel: (accessToken: string, serverId: string, name: string, emoji: string) =>
+		request('/servers/' + encodeURIComponent(serverId) + '/channels', 'POST', { name, emoji }, accessToken),
+	updateServer: (accessToken: string, serverId: string, name?: string, description?: string, isPublic?: boolean) => {
+		const body: Record<string, unknown> = {};
+		if (name !== undefined) body.name = name;
+		if (description !== undefined) body.description = description;
+		if (isPublic !== undefined) body.is_public = isPublic;
+		return request('/servers/' + encodeURIComponent(serverId), 'PUT', body, accessToken);
+	},
+	deleteServer: (accessToken: string, serverId: string) =>
+		request('/servers/' + encodeURIComponent(serverId), 'DELETE', undefined, accessToken),
 	dmThreads: (accessToken: string) => request<DmThreadResponse[]>('/dm/threads', 'GET', undefined, accessToken),
 	dmCreateOrGetThread: (accessToken: string, userId: string) =>
 		request<DmThreadResponse>('/dm/threads', 'POST', { user_id: userId }, accessToken),

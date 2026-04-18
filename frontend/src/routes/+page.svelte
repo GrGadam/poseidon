@@ -7,7 +7,7 @@
 		DmMessageResponse,
 		DmThreadResponse
 	} from '$lib/api/client';
-	import { apiClient } from '$lib/api/client';
+	import { apiClient, apiConfig } from '$lib/api/client';
 	import { login, logout, register, session } from '$lib/stores/auth';
 	import { selectedTab } from '$lib/stores/ui';
 	import {
@@ -40,9 +40,41 @@
 	let authError = $state<string | null>(null);
 	let addFriendModalOpen = $state(false);
 	let pendingModalOpen = $state(false);
+	let createServerModalOpen = $state(false);
 	let addFriendUsername = $state('');
 	let addFriendMessage = $state<string | null>(null);
 	let addFriendError = $state<string | null>(null);
+	let createServerName = $state('');
+	let createServerDescription = $state('');
+	let createServerIsPublic = $state(true);
+	let createServerError = $state<string | null>(null);
+	let createServerMessage = $state<string | null>(null);
+	let createServerLoading = $state(false);
+	let createChannelModalOpen = $state(false);
+	let createChannelName = $state('');
+	let createChannelEmoji = $state('💬');
+	let createChannelError = $state<string | null>(null);
+	let createChannelLoading = $state(false);
+	let serverSettingsMenuOpen = $state(false);
+	let serverSettingsMenuEl = $state<HTMLElement | null>(null);
+	let friendSettingsMenuOpen = $state(false);
+	let friendSettingsMenuEl = $state<HTMLElement | null>(null);
+	let updateServerNameModalOpen = $state(false);
+	let updateServerNameValue = $state('');
+	let updateServerNameError = $state<string | null>(null);
+	let updateServerNameLoading = $state(false);
+	let updateServerDescriptionModalOpen = $state(false);
+	let updateServerDescriptionValue = $state('');
+	let updateServerDescriptionError = $state<string | null>(null);
+	let updateServerDescriptionLoading = $state(false);
+	let updateServerVisibilityModalOpen = $state(false);
+	let updateServerVisibilityValue = $state(false);
+	let updateServerVisibilityError = $state<string | null>(null);
+	let updateServerVisibilityLoading = $state(false);
+	let deleteServerModalOpen = $state(false);
+	let deleteServerError = $state<string | null>(null);
+	let deleteServerLoading = $state(false);
+	let deleteServerConfirmText = $state('');
 	let pendingActionError = $state<string | null>(null);
 	let pendingActionInProgressId = $state<string | null>(null);
 	let lastLoadedToken = $state<string | null>(null);
@@ -60,7 +92,7 @@
 	let settingsMenuEl = $state<HTMLElement | null>(null);
 
 	type ChatView = 'none' | 'friend' | 'server' | 'server-channels';
-	type ServerChannel = { id: string; name: string };
+	type ServerChannel = { id: string; name: string; emoji: string };
 	type ChatMessage = { id: string; userId: string; content: string; createdAt: number };
 
 	let activeChat = $state<ChatView>('none');
@@ -77,6 +109,25 @@
 	let dmThreadByFriendId = $state<Record<string, string>>({});
 	let friendByDmThreadId = $state<Record<string, string>>({});
 	let onlineUserIdsSnapshot = $state<string[]>([]);
+
+	const loadUserAvatarUrl = async (accessToken: string, userId: string): Promise<string | null> => {
+		const res = await fetch(`${apiConfig.baseUrl}/users/${encodeURIComponent(userId)}/avatar`, {
+			headers: {
+				Authorization: `Bearer ${accessToken}`
+			}
+		});
+
+		if (!res.ok) {
+			return null;
+		}
+
+		const blob = await res.blob();
+		if (blob.size === 0) {
+			return null;
+		}
+
+		return URL.createObjectURL(blob);
+	};
 	const seenDmCreatedIds = new Set<string>();
 	const seenDmCreatedOrder: string[] = [];
 
@@ -111,7 +162,7 @@
 		try {
 			if (authMode === 'login') {
 				if (!loginIdentifier.trim() || !password) {
-					authError = 'Add meg a felhasználóneved/e-mail címed és a jelszavad.';
+					authError = 'Enter your username/email and password.';
 					return;
 				}
 
@@ -120,28 +171,28 @@
 			}
 
 			if (!username.trim()) {
-				authError = 'A felhasználónév kötelező.';
+				authError = 'Username is required.';
 				return;
 			}
 
 			if (!email.includes('@')) {
-				authError = 'Adj meg egy érvényes e-mail címet.';
+				authError = 'Enter a valid email address.';
 				return;
 			}
 
 			if (password.length < 6) {
-				authError = 'A jelszónak legalább 6 karakteresnek kell lennie.';
+				authError = 'Password must be at least 6 characters.';
 				return;
 			}
 
 			if (password !== confirmPassword) {
-				authError = 'A két jelszó nem egyezik.';
+				authError = 'The passwords do not match.';
 				return;
 			}
 
 			await register(username.trim(), email.trim().toLowerCase(), password);
 		} catch (error) {
-			authError = error instanceof Error ? error.message : 'Sikertelen hitelesítés.';
+			authError = error instanceof Error ? error.message : 'Authentication failed.';
 		}
 	};
 
@@ -196,16 +247,39 @@
 			id: string;
 			name: string;
 			description?: string | null;
+			owner_id: string;
 		}>;
 
-		servers.set(
-			data.map((item) => ({
-				id: item.id,
-				name: item.name,
-				description: item.description ?? '',
-				hasUnread: false
-			}))
+		const previousServers = get(servers);
+		const previousById = new Map(previousServers.map((entry) => [entry.id, entry]));
+		const incomingIds = new Set(data.map((item) => item.id));
+
+		for (const entry of previousServers) {
+			if (!incomingIds.has(entry.id) && entry.avatarUrl?.startsWith('blob:')) {
+				URL.revokeObjectURL(entry.avatarUrl);
+			}
+		}
+
+		const nextServers = await Promise.all(
+			data.map(async (item) => {
+				const previous = previousById.get(item.id);
+				let avatarUrl = previous?.avatarUrl ?? null;
+
+				if (!avatarUrl) {
+					avatarUrl = await loadUserAvatarUrl(token, item.owner_id);
+				}
+
+				return {
+					id: item.id,
+					name: item.name,
+					description: item.description ?? '',
+					avatarUrl,
+					hasUnread: false
+				};
+			})
 		);
+
+		servers.set(nextServers);
 	};
 
 	const toChatMessage = (item: DmMessageResponse | ChannelMessageResponse): ChatMessage => ({
@@ -274,7 +348,7 @@
 
 			chatMessages = nextMessages ?? [];
 		} catch (error) {
-			chatError = error instanceof Error ? error.message : 'Az üzenetek betöltése sikertelen.';
+			chatError = error instanceof Error ? error.message : 'Failed to load messages.';
 		} finally {
 			if (!silent) {
 				chatLoading = false;
@@ -305,7 +379,11 @@
 		const data = await apiClient.serverChannels(token, serverId);
 		serverChannels = {
 			...serverChannels,
-			[serverId]: data.map((channel: ChannelResponse) => ({ id: channel.id, name: channel.name }))
+			[serverId]: data.map((channel: ChannelResponse) => ({
+				id: channel.id,
+				name: channel.name,
+				emoji: channel.emoji
+			}))
 		};
 	};
 
@@ -376,9 +454,9 @@
 				return;
 			}
 
-			chatError = 'Nincs aktív chat kiválasztva.';
+			chatError = 'No active chat selected.';
 		} catch (error) {
-			chatError = error instanceof Error ? error.message : 'Az üzenet küldése sikertelen.';
+			chatError = error instanceof Error ? error.message : 'Failed to send message.';
 		} finally {
 			chatSending = false;
 		}
@@ -395,29 +473,29 @@
 
 		const name = addFriendUsername.trim();
 		if (!name) {
-			addFriendError = 'Adj meg egy felhasználónevet.';
+			addFriendError = 'Enter a username.';
 			return;
 		}
 
 		try {
 			await sendFriendRequest(token, name);
 			addFriendUsername = '';
-			addFriendMessage = 'A barátkérelem elküldve.';
+			addFriendMessage = 'Friend request sent.';
 		} catch (error) {
 			if (error instanceof Error) {
 				if (error.message === 'not_found') {
-					addFriendError = 'Nincs ilyen felhasználó.';
+					addFriendError = 'User not found.';
 					return;
 				}
 				if (error.message.includes('already exists') || error.message.includes('request already exists')) {
-					addFriendError = 'Ehhez a felhasználóhoz már van függő kérelem.';
+					addFriendError = 'A pending request already exists for this user.';
 					return;
 				}
 				addFriendError = error.message;
 				return;
 			}
 
-			addFriendError = 'A barátkérelem küldése sikertelen.';
+			addFriendError = 'Failed to send friend request.';
 		}
 	};
 
@@ -441,7 +519,7 @@
 				pendingModalOpen = false;
 			}
 		} catch (error) {
-			pendingActionError = error instanceof Error ? error.message : 'A kérés feldolgozása sikertelen.';
+			pendingActionError = error instanceof Error ? error.message : 'Failed to process request.';
 		} finally {
 			pendingActionInProgressId = null;
 		}
@@ -461,6 +539,7 @@
 		chatMessages = [];
 		chatError = null;
 		activeChat = 'friend';
+		friendSettingsMenuOpen = false;
 		clearFriendUnread(friend.id);
 
 		try {
@@ -476,13 +555,14 @@
 			await loadActiveMessages();
 			scrollChatOnOpen(unreadCount);
 		} catch (error) {
-			chatError = error instanceof Error ? error.message : 'A DM chat megnyitása sikertelen.';
+			chatError = error instanceof Error ? error.message : 'Failed to open direct message chat.';
 		}
 	};
 
 	const openServerChannels = async (server: ServerEntry) => {
 		selectServer(server);
 		activeChat = 'server-channels';
+		friendSettingsMenuOpen = false;
 		selectedChannel = null;
 		activeDmThreadId = null;
 		chatMessages = [];
@@ -492,7 +572,7 @@
 		try {
 			await loadServerChannels(server.id);
 		} catch (error) {
-			chatError = error instanceof Error ? error.message : 'A csatornák betöltése sikertelen.';
+			chatError = error instanceof Error ? error.message : 'Failed to load channels.';
 		}
 	};
 
@@ -509,6 +589,7 @@
 
 	const closeChat = () => {
 		activeChat = 'none';
+		friendSettingsMenuOpen = false;
 		activeDmThreadId = null;
 		chatMessages = [];
 		chatError = null;
@@ -530,6 +611,50 @@
 		pendingActionError = null;
 	};
 
+	const openCreateServerModal = () => {
+		createServerModalOpen = true;
+		createServerError = null;
+		createServerMessage = null;
+	};
+
+	const handleCreateServer = async () => {
+		const token = $session.accessToken;
+		if (!token || createServerLoading) {
+			return;
+		}
+
+		createServerError = null;
+		createServerMessage = null;
+
+		const name = createServerName.trim();
+		const description = createServerDescription.trim();
+
+		if (!name) {
+			createServerError = 'Server name is required.';
+			return;
+		}
+
+		if (name.length > 64) {
+			createServerError = 'Server name must be at most 64 characters.';
+			return;
+		}
+
+		createServerLoading = true;
+		try {
+			await apiClient.createServer(token, name, description, createServerIsPublic);
+			await refreshServersData();
+			createServerMessage = 'Server created successfully.';
+			createServerName = '';
+			createServerDescription = '';
+			createServerIsPublic = true;
+			createServerModalOpen = false;
+		} catch (error) {
+			createServerError = error instanceof Error ? error.message : 'Failed to create server.';
+		} finally {
+			createServerLoading = false;
+		}
+	};
+
 	const openPasswordModal = () => {
 		passwordModalOpen = true;
 		passwordChangeError = null;
@@ -537,6 +662,215 @@
 		currentPasswordInput = '';
 		newPasswordInput = '';
 		newPasswordConfirmInput = '';
+	};
+
+	const openCreateChannelModal = () => {
+		serverSettingsMenuOpen = false;
+		createChannelModalOpen = true;
+		createChannelError = null;
+		createChannelName = '';
+		createChannelEmoji = '💬';
+	};
+
+	const handleCreateChannel = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId || createChannelLoading) {
+			return;
+		}
+
+		createChannelError = null;
+		const name = createChannelName.trim();
+
+		const emoji = createChannelEmoji.trim();
+
+		if (!name) {
+			createChannelError = 'Channel name is required.';
+			return;
+		}
+
+		if (name.length > 64) {
+			createChannelError = 'Channel name must be at most 64 characters.';
+			return;
+		}
+
+		if (!emoji) {
+			createChannelError = 'Emoji is required.';
+			return;
+		}
+
+		createChannelLoading = true;
+		try {
+			await apiClient.createChannel(token, serverId, name, emoji);
+			await loadServerChannels(serverId);
+			createChannelName = '';
+			createChannelEmoji = '💬';
+			createChannelModalOpen = false;
+		} catch (error) {
+			createChannelError = error instanceof Error ? error.message : 'Failed to create channel.';
+		} finally {
+			createChannelLoading = false;
+		}
+	};
+
+	const handleDeleteSelectedFriend = async () => {
+		const token = $session.accessToken;
+		const friendId = $selectedFriend?.id;
+		if (!token || !friendId) {
+			return;
+		}
+
+		const confirmed = window.confirm('Delete this friend and the conversation? This cannot be undone.');
+		if (!confirmed) {
+			return;
+		}
+
+		chatError = null;
+		friendSettingsMenuOpen = false;
+		try {
+			await apiClient.deleteFriend(token, friendId);
+			await refreshFriendsData();
+			closeChat();
+		} catch (error) {
+			chatError = error instanceof Error ? error.message : 'Failed to delete friend.';
+		}
+	};
+
+	const openUpdateServerNameModal = () => {
+		serverSettingsMenuOpen = false;
+		if ($selectedServer) {
+			updateServerNameValue = $selectedServer.name;
+			updateServerNameModalOpen = true;
+			updateServerNameError = null;
+		}
+	};
+
+	const handleUpdateServerName = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId || updateServerNameLoading) {
+			return;
+		}
+
+		updateServerNameError = null;
+		const name = updateServerNameValue.trim();
+
+		if (!name) {
+			updateServerNameError = 'Server name is required.';
+			return;
+		}
+
+		if (name.length > 64) {
+			updateServerNameError = 'Server name must be at most 64 characters.';
+			return;
+		}
+
+		updateServerNameLoading = true;
+		try {
+			await apiClient.updateServer(token, serverId, name);
+			await refreshServersData();
+			updateServerNameModalOpen = false;
+		} catch (error) {
+			updateServerNameError = error instanceof Error ? error.message : 'Failed to update server name.';
+		} finally {
+			updateServerNameLoading = false;
+		}
+	};
+
+	const openUpdateServerDescriptionModal = () => {
+		serverSettingsMenuOpen = false;
+		if ($selectedServer) {
+			updateServerDescriptionValue = $selectedServer.description ?? '';
+			updateServerDescriptionModalOpen = true;
+			updateServerDescriptionError = null;
+		}
+	};
+
+	const handleUpdateServerDescription = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId || updateServerDescriptionLoading) {
+			return;
+		}
+
+		updateServerDescriptionError = null;
+
+		updateServerDescriptionLoading = true;
+		try {
+			await apiClient.updateServer(token, serverId, undefined, updateServerDescriptionValue.trim());
+			await refreshServersData();
+			updateServerDescriptionModalOpen = false;
+		} catch (error) {
+			updateServerDescriptionError = error instanceof Error ? error.message : 'Failed to update server description.';
+		} finally {
+			updateServerDescriptionLoading = false;
+		}
+	};
+
+	const openUpdateServerVisibilityModal = () => {
+		serverSettingsMenuOpen = false;
+		if ($selectedServer) {
+			// Guess if public based on some logic or fetch from server data if available
+			// For now we'll default to false until we know the actual value
+			updateServerVisibilityValue = false;
+			updateServerVisibilityModalOpen = true;
+			updateServerVisibilityError = null;
+		}
+	};
+
+	const handleUpdateServerVisibility = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId || updateServerVisibilityLoading) {
+			return;
+		}
+
+		updateServerVisibilityError = null;
+
+		updateServerVisibilityLoading = true;
+		try {
+			await apiClient.updateServer(token, serverId, undefined, undefined, updateServerVisibilityValue);
+			await refreshServersData();
+			updateServerVisibilityModalOpen = false;
+		} catch (error) {
+			updateServerVisibilityError = error instanceof Error ? error.message : 'Failed to update server visibility.';
+		} finally {
+			updateServerVisibilityLoading = false;
+		}
+	};
+
+	const openDeleteServerModal = () => {
+		serverSettingsMenuOpen = false;
+		deleteServerModalOpen = true;
+		deleteServerError = null;
+		deleteServerConfirmText = '';
+	};
+
+	const handleDeleteServer = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId || deleteServerLoading) {
+			return;
+		}
+
+		deleteServerError = null;
+
+		if (deleteServerConfirmText !== 'DELETE') {
+			deleteServerError = 'Confirm deletion by typing "DELETE".';
+			return;
+		}
+
+		deleteServerLoading = true;
+		try {
+			await apiClient.deleteServer(token, serverId);
+			await refreshServersData();
+			backToServerList();
+			deleteServerModalOpen = false;
+		} catch (error) {
+			deleteServerError = error instanceof Error ? error.message : 'Failed to delete server.';
+		} finally {
+			deleteServerLoading = false;
+		}
 	};
 
 	const handlePasswordChange = async () => {
@@ -549,37 +883,37 @@
 		passwordChangeMessage = null;
 
 		if (!currentPasswordInput || !newPasswordInput || !newPasswordConfirmInput) {
-			passwordChangeError = 'Minden mezőt tölts ki.';
+			passwordChangeError = 'Fill in all fields.';
 			return;
 		}
 
 		if (newPasswordInput.length < 6) {
-			passwordChangeError = 'Az új jelszónak legalább 6 karakteresnek kell lennie.';
+			passwordChangeError = 'The new password must be at least 6 characters.';
 			return;
 		}
 
 		if (newPasswordInput !== newPasswordConfirmInput) {
-			passwordChangeError = 'Az új jelszó és a megerősítés nem egyezik.';
+			passwordChangeError = 'New password and confirmation do not match.';
 			return;
 		}
 
 		if (currentPasswordInput === newPasswordInput) {
-			passwordChangeError = 'Az új jelszó nem lehet azonos a régivel.';
+			passwordChangeError = 'New password must be different from the current one.';
 			return;
 		}
 
 		passwordChangeLoading = true;
 		try {
 			await apiClient.changeMyPassword(token, currentPasswordInput, newPasswordInput);
-			passwordChangeMessage = 'A jelszó sikeresen módosítva.';
+			passwordChangeMessage = 'Password updated successfully.';
 			currentPasswordInput = '';
 			newPasswordInput = '';
 			newPasswordConfirmInput = '';
 		} catch (error) {
 			if (error instanceof Error && error.message === 'unauthorized') {
-				passwordChangeError = 'A jelenlegi jelszó hibás.';
+				passwordChangeError = 'Current password is incorrect.';
 			} else {
-				passwordChangeError = error instanceof Error ? error.message : 'A jelszó módosítása sikertelen.';
+				passwordChangeError = error instanceof Error ? error.message : 'Failed to update password.';
 			}
 		} finally {
 			passwordChangeLoading = false;
@@ -612,9 +946,9 @@
 				markAvatarDirty($session.userId);
 			}
 			await Promise.all([refreshFriends(token), refreshPendingRequests(token)]);
-			profileUploadMessage = 'Profilkép feltöltve.';
+			profileUploadMessage = 'Profile image uploaded.';
 		} catch (error) {
-			profileUploadError = error instanceof Error ? error.message : 'A profilkép feltöltése sikertelen.';
+			profileUploadError = error instanceof Error ? error.message : 'Failed to upload profile image.';
 		} finally {
 			input.value = '';
 		}
@@ -633,9 +967,33 @@
 		onlineUserIdsSnapshot = [];
 		addFriendModalOpen = false;
 		pendingModalOpen = false;
+		createServerModalOpen = false;
+		createChannelModalOpen = false;
+		serverSettingsMenuOpen = false;
+		updateServerNameModalOpen = false;
+		updateServerDescriptionModalOpen = false;
+		updateServerVisibilityModalOpen = false;
+		deleteServerModalOpen = false;
+		friendSettingsMenuOpen = false;
 		addFriendUsername = '';
 		addFriendError = null;
 		addFriendMessage = null;
+		createServerName = '';
+		createServerDescription = '';
+		createServerIsPublic = true;
+		createServerError = null;
+		createServerMessage = null;
+		createChannelName = '';
+		createChannelEmoji = '💬';
+		createChannelError = null;
+		updateServerNameValue = '';
+		updateServerNameError = null;
+		updateServerDescriptionValue = '';
+		updateServerDescriptionError = null;
+		updateServerVisibilityValue = false;
+		updateServerVisibilityError = null;
+		deleteServerError = null;
+		deleteServerConfirmText = '';
 		pendingActionError = null;
 		profileUploadError = null;
 		profileUploadMessage = null;
@@ -748,13 +1106,18 @@
 		};
 
 		const handleOutsideClick = (event: MouseEvent) => {
-			if (!settingsMenuOpen || !settingsMenuEl) {
-				return;
+			const target = event.target as Node | null;
+
+			if (settingsMenuOpen && settingsMenuEl && target && !settingsMenuEl.contains(target)) {
+				settingsMenuOpen = false;
 			}
 
-			const target = event.target as Node | null;
-			if (target && !settingsMenuEl.contains(target)) {
-				settingsMenuOpen = false;
+			if (serverSettingsMenuOpen && serverSettingsMenuEl && target && !serverSettingsMenuEl.contains(target)) {
+				serverSettingsMenuOpen = false;
+			}
+
+			if (friendSettingsMenuOpen && friendSettingsMenuEl && target && !friendSettingsMenuEl.contains(target)) {
+				friendSettingsMenuOpen = false;
 			}
 		};
 
@@ -795,33 +1158,33 @@
 						void submitAuth();
 					}}
 				>
-					<h2 class="text-xl font-semibold">{authMode === 'login' ? 'Belépés' : 'Regisztráció'}</h2>
+					<h2 class="text-xl font-semibold">{authMode === 'login' ? 'Sign in' : 'Sign up'}</h2>
 
 					<div class="space-y-3">
 						{#if authMode === 'login'}
 							<label class="block w-full">
-								<span class="label-text block mb-2">Felhasználónév vagy e-mail</span>
+								<span class="label-text block mb-2">Username or email</span>
 								<input class="input input-bordered w-full" bind:value={loginIdentifier} autocomplete="username" />
 							</label>
 						{:else}
 							<label class="block w-full">
-								<span class="label-text block mb-2">Felhasználónév</span>
+								<span class="label-text block mb-2">Username</span>
 								<input class="input input-bordered w-full" bind:value={username} autocomplete="username" />
 							</label>
 							<label class="block w-full">
-								<span class="label-text block mb-2">E-mail</span>
+								<span class="label-text block mb-2">Email</span>
 								<input class="input input-bordered w-full" type="email" bind:value={email} autocomplete="email" />
 							</label>
 						{/if}
 
 						<label class="block w-full">
-							<span class="label-text block mb-2">Jelszó</span>
+							<span class="label-text block mb-2">Password</span>
 							<input class="input input-bordered w-full" type="password" bind:value={password} autocomplete="current-password" />
 						</label>
 
 						{#if authMode === 'register'}
 							<label class="block w-full">
-								<span class="label-text block mb-2">Jelszó újra</span>
+								<span class="label-text block mb-2">Confirm password</span>
 								<input class="input input-bordered w-full" type="password" bind:value={confirmPassword} autocomplete="new-password" />
 							</label>
 						{/if}
@@ -835,11 +1198,11 @@
 						{/if}
 
 						<button class="btn btn-primary w-full" type="submit">
-							{authMode === 'login' ? 'Belépés' : 'Regisztráció'}
+							{authMode === 'login' ? 'Sign in' : 'Sign up'}
 						</button>
 
 						<button class="btn btn-ghost btn-sm w-full" type="button" onclick={switchAuthMode}>
-							{authMode === 'login' ? 'Nincs fiókod? Regisztrálj' : 'Van fiókod? Lépj be'}
+							{authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
 						</button>
 					</div>
 				</form>
@@ -853,7 +1216,7 @@
 			{#if activeChat === 'none'}
 				<section class="h-full p-3 overflow-auto">
 					<div class="h-12 border border-slate-700/60 rounded-md px-3 mb-3 flex items-center justify-between bg-slate-900/70">
-						<p class="text-sm text-slate-300 truncate">{$session.username ?? 'Felhasználó'}</p>
+						<p class="text-sm text-slate-300 truncate">{$session.username ?? 'User'}</p>
 						<div class="relative" bind:this={settingsMenuEl}>
 							<button
 								type="button"
@@ -867,7 +1230,7 @@
 
 							{#if settingsMenuOpen}
 								<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
-									<li><button type="button" onclick={handleOpenAvatarUpload}>Profilkép feltöltés</button></li>
+									<li><button type="button" onclick={handleOpenAvatarUpload}>Upload profile image</button></li>
 									<li>
 										<button
 											type="button"
@@ -876,10 +1239,10 @@
 												openPasswordModal();
 											}}
 										>
-											Jelszó módosítás
+											Change password
 										</button>
 									</li>
-									<li><button type="button" onclick={handleLogout}>Kijelentkezés</button></li>
+									<li><button type="button" onclick={handleLogout}>Sign out</button></li>
 								</ul>
 							{/if}
 						</div>
@@ -903,7 +1266,7 @@
 
 					{#if $selectedTab === 'friends'}
 						<div class="mb-3">
-							<button class="btn btn-primary btn-sm w-full" type="button" onclick={openAddFriendModal}>+ Barát hozzáadása</button>
+							<button class="btn btn-primary btn-sm w-full" type="button" onclick={openAddFriendModal}>+ Add friend</button>
 						</div>
 
 						{#if $friendPending.length > 0}
@@ -969,10 +1332,30 @@
 							{/each}
 						</ul>
 					{:else}
+						<div class="mb-3">
+							<button class="btn btn-primary btn-sm w-full" type="button" onclick={openCreateServerModal}>+ Create server</button>
+						</div>
+
+						{#if createServerError}
+							<div class="alert alert-error py-2 text-sm mb-3"><span>{createServerError}</span></div>
+						{/if}
+						{#if createServerMessage}
+							<div class="alert alert-success py-2 text-sm mb-3"><span>{createServerMessage}</span></div>
+						{/if}
+
 						<ul class="menu rounded-box bg-slate-800/40 w-full">
 							{#each $servers as item}
 								<li>
 									<button type="button" onclick={() => openServerChannels(item)}>
+										<div class="avatar mr-3">
+											<div class="w-9 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
+												{#if item.avatarUrl}
+													<img src={item.avatarUrl} alt={`${item.name} avatar`} class="h-full w-full object-cover" />
+												{:else}
+													<span class="text-xs font-semibold">{item.name.slice(0, 1).toUpperCase()}</span>
+												{/if}
+											</div>
+										</div>
 										<div class="flex-1">
 											<p class="font-medium">{item.name}</p>
 											<p class="text-xs text-slate-400 truncate">{item.description}</p>
@@ -987,54 +1370,102 @@
 					{/if}
 				</section>
 			{:else if activeChat === 'server-channels'}
-				<section class="h-full p-3 overflow-auto">
-					<div class="h-14 border-b border-slate-700/60 flex items-center justify-between px-1 mb-3">
-						<p class="font-semibold truncate">
-							{#if $selectedServer}
-								# {$selectedServer.name} csatornák
-							{:else}
-								Csatornák
-							{/if}
-						</p>
-						<button class="btn btn-sm btn-ghost" onclick={backToServerList}>Vissza a szerverekhez</button>
-					</div>
-
-					<ul class="menu rounded-box bg-slate-800/40 w-full">
+				<section class="h-full flex flex-col">
+				<div class="h-14 border-b border-slate-700/60 flex items-center justify-between px-4 bg-slate-800/40">
+					<button class="btn btn-sm btn-ghost" onclick={backToServerList}>Back</button>
+					<p class="font-semibold truncate flex-1 text-center">
 						{#if $selectedServer}
-							{#if (serverChannels[$selectedServer.id] ?? []).length > 0}
+							{$selectedServer.name}
+						{:else}
+							Server
+						{/if}
+					</p>
+					<div class="relative" bind:this={serverSettingsMenuEl}>
+						<button
+							type="button"
+							class="btn btn-sm btn-circle btn-ghost text-xl leading-none"
+							onclick={() => {
+								serverSettingsMenuOpen = !serverSettingsMenuOpen;
+							}}
+						>
+							⚙
+						</button>
+
+						{#if serverSettingsMenuOpen}
+							<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
+								<li><button type="button" onclick={openCreateChannelModal}>Create channel</button></li>
+								<li><button type="button" onclick={openUpdateServerNameModal}>Rename server</button></li>
+								<li><button type="button" onclick={openUpdateServerDescriptionModal}>Edit server description</button></li>
+								<li><button type="button" onclick={openUpdateServerVisibilityModal}>Edit server visibility</button></li>
+								<li><button type="button" class="text-error" onclick={openDeleteServerModal}>Delete server</button></li>
+							</ul>
+						{/if}
+					</div>
+				</div>
+
+				<div class="flex-1 overflow-auto p-3">
+					{#if $selectedServer}
+						{#if (serverChannels[$selectedServer.id] ?? []).length > 0}
+							<ul class="menu rounded-box bg-slate-800/40 w-full">
 								{#each serverChannels[$selectedServer.id] ?? [] as channel}
 									<li>
 										<button type="button" onclick={() => openServerChannelChat(channel)}>
-											# {channel.name}
+											{channel.emoji} {channel.name}
 										</button>
 									</li>
 								{/each}
-							{:else}
-								<li><span class="text-slate-400">Nincsenek csatornák.</span></li>
-							{/if}
+							</ul>
 						{:else}
-							<li><span class="text-slate-400">Nincs kiválasztott szerver.</span></li>
+							<div class="h-full flex items-center justify-center">
+								<p class="text-slate-400 text-center">No channels yet.</p>
+							</div>
 						{/if}
-					</ul>
-				</section>
-			{:else}
+					{:else}
+						<div class="h-full flex items-center justify-center">
+							<p class="text-slate-400">No server selected.</p>
+						</div>
+					{/if}
+				</div>
+			</section>
+		{:else}
 				<section class="h-full flex flex-col">
 					<div class="h-14 border-b border-slate-700/60 flex items-center justify-between px-4 bg-slate-800/40">
-						<p class="font-semibold truncate">
+						<button class="btn btn-sm btn-ghost" onclick={closeChat}>Back</button>
+						<p class="font-semibold truncate flex-1 text-center">
 							{#if activeChat === 'friend'}
-								{$selectedFriend?.username ?? 'Barát chat'}
+								{$selectedFriend?.username ?? 'Direct message'}
 							{:else}
-								{#if $selectedServer}# {$selectedServer.name} / {/if}{selectedChannel?.name ?? 'Csatorna chat'}
+								{selectedChannel ? `${selectedChannel.emoji} ${selectedChannel.name}` : 'Channel chat'}
 							{/if}
 						</p>
-						<button class="btn btn-sm btn-ghost" onclick={closeChat}>Vissza</button>
+						{#if activeChat === 'friend'}
+							<div class="relative" bind:this={friendSettingsMenuEl}>
+								<button
+									type="button"
+									class="btn btn-sm btn-circle btn-ghost text-xl leading-none"
+									onclick={() => {
+										friendSettingsMenuOpen = !friendSettingsMenuOpen;
+									}}
+								>
+									⚙
+								</button>
+
+								{#if friendSettingsMenuOpen}
+									<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
+										<li><button type="button" class="text-error" onclick={handleDeleteSelectedFriend}>Delete friend and conversation</button></li>
+									</ul>
+								{/if}
+							</div>
+						{:else}
+							<div class="w-16"></div>
+						{/if}
 					</div>
 
 					<div class="flex-1 overflow-auto p-4 space-y-2" bind:this={chatContainer}>
 						{#if chatLoading}
-							<p class="text-sm text-slate-400">Üzenetek betöltése...</p>
+							<p class="text-sm text-slate-400">Loading messages...</p>
 						{:else if chatMessages.length === 0}
-							<p class="text-sm text-slate-400">Még nincs üzenet.</p>
+							<p class="text-sm text-slate-400">No messages yet.</p>
 						{:else}
 							{#each chatMessages as msg, idx}
 								<div class={`chat ${msg.userId === $session.userId ? 'chat-end' : 'chat-start'}`} data-msg-index={idx}>
@@ -1058,7 +1489,7 @@
 						<div class="join w-full">
 							<input
 								class="input input-bordered join-item flex-1"
-								placeholder="Írj üzenetet..."
+								placeholder="Type a message..."
 								bind:value={chatInput}
 								onkeydown={(event) => {
 									if (event.key === 'Enter' && !event.shiftKey) {
@@ -1068,7 +1499,7 @@
 								}}
 							/>
 							<button class="btn join-item btn-primary" onclick={handleSendChatMessage} disabled={chatSending}>
-								{chatSending ? 'Küldés...' : 'Küldés'}
+								{chatSending ? 'Sending...' : 'Send'}
 							</button>
 						</div>
 					</div>
@@ -1088,22 +1519,22 @@
 				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
 					<div class="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
 						<div class="flex items-center justify-between">
-							<h3 class="font-semibold">Jelszó módosítás</h3>
+							<h3 class="font-semibold">Change password</h3>
 							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { passwordModalOpen = false; }}>✕</button>
 						</div>
 
 						<label class="block w-full">
-							<span class="label-text block mb-2">Jelenlegi jelszó</span>
+							<span class="label-text block mb-2">Current password</span>
 							<input class="input input-bordered w-full" type="password" bind:value={currentPasswordInput} />
 						</label>
 
 						<label class="block w-full">
-							<span class="label-text block mb-2">Új jelszó</span>
+							<span class="label-text block mb-2">New password</span>
 							<input class="input input-bordered w-full" type="password" bind:value={newPasswordInput} />
 						</label>
 
 						<label class="block w-full">
-							<span class="label-text block mb-2">Új jelszó megerősítése</span>
+							<span class="label-text block mb-2">Confirm new password</span>
 							<input class="input input-bordered w-full" type="password" bind:value={newPasswordConfirmInput} />
 						</label>
 
@@ -1115,9 +1546,9 @@
 						{/if}
 
 						<div class="flex justify-end gap-2">
-							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { passwordModalOpen = false; }}>Mégse</button>
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { passwordModalOpen = false; }}>Cancel</button>
 							<button class="btn btn-sm btn-primary" type="button" disabled={passwordChangeLoading} onclick={handlePasswordChange}>
-								{passwordChangeLoading ? 'Mentés...' : 'Mentés'}
+								{passwordChangeLoading ? 'Saving...' : 'Save'}
 							</button>
 						</div>
 					</div>
@@ -1128,12 +1559,12 @@
 				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
 					<div class="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
 						<div class="flex items-center justify-between">
-							<h3 class="font-semibold">Barát hozzáadása</h3>
+							<h3 class="font-semibold">Add friend</h3>
 							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { addFriendModalOpen = false; }}>✕</button>
 						</div>
 
 						<label class="block w-full">
-							<span class="label-text block mb-2">Felhasználónév</span>
+							<span class="label-text block mb-2">Username</span>
 							<input class="input input-bordered w-full" bind:value={addFriendUsername} />
 						</label>
 
@@ -1145,8 +1576,8 @@
 						{/if}
 
 						<div class="flex gap-2 justify-end">
-							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { addFriendModalOpen = false; }}>Mégse</button>
-							<button class="btn btn-sm btn-primary" type="button" onclick={handleCreateFriendRequest}>Küldés</button>
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { addFriendModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" onclick={handleCreateFriendRequest}>Send</button>
 						</div>
 					</div>
 				</div>
@@ -1156,7 +1587,7 @@
 				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
 					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3 max-h-[80vh] overflow-auto">
 						<div class="flex items-center justify-between">
-							<h3 class="font-semibold">Pending kérelmek</h3>
+							<h3 class="font-semibold">Pending requests</h3>
 							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { pendingModalOpen = false; }}>✕</button>
 						</div>
 
@@ -1165,7 +1596,7 @@
 						{/if}
 
 						{#if $friendPending.length === 0}
-							<p class="text-sm text-slate-400">Nincs pending kérelem.</p>
+							<p class="text-sm text-slate-400">No pending requests.</p>
 						{:else}
 							<ul class="space-y-2">
 								{#each $friendPending as req}
@@ -1208,6 +1639,186 @@
 								{/each}
 							</ul>
 						{/if}
+					</div>
+				</div>
+			{/if}
+
+			{#if createServerModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Create server</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { createServerModalOpen = false; }}>✕</button>
+						</div>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Server name</span>
+							<input class="input input-bordered w-full" bind:value={createServerName} maxlength="64" placeholder="e.g. Poseidon Guild" />
+						</label>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Description (optional)</span>
+							<textarea class="textarea textarea-bordered w-full" rows="3" bind:value={createServerDescription} placeholder="Short server description"></textarea>
+						</label>
+
+						<label class="label cursor-pointer justify-start gap-3">
+							<input class="checkbox checkbox-sm" type="checkbox" bind:checked={createServerIsPublic} />
+							<span class="label-text">Public server</span>
+						</label>
+
+						{#if createServerError}
+							<div class="alert alert-error py-2 text-sm"><span>{createServerError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { createServerModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={createServerLoading} onclick={handleCreateServer}>
+								{createServerLoading ? 'Creating...' : 'Create'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if createChannelModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Create channel</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { createChannelModalOpen = false; }}>✕</button>
+						</div>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Channel name</span>
+							<input class="input input-bordered w-full" bind:value={createChannelName} maxlength="64" placeholder="e.g. general" />
+						</label>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Emoji</span>
+							<input class="input input-bordered w-full" bind:value={createChannelEmoji} maxlength="5" placeholder="e.g. 💬" />
+						</label>
+
+						{#if createChannelError}
+							<div class="alert alert-error py-2 text-sm"><span>{createChannelError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { createChannelModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={createChannelLoading} onclick={handleCreateChannel}>
+								{createChannelLoading ? 'Creating...' : 'Create'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if updateServerNameModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Rename server</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { updateServerNameModalOpen = false; }}>✕</button>
+						</div>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Server name</span>
+							<input class="input input-bordered w-full" bind:value={updateServerNameValue} maxlength="64" />
+						</label>
+
+						{#if updateServerNameError}
+							<div class="alert alert-error py-2 text-sm"><span>{updateServerNameError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { updateServerNameModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={updateServerNameLoading} onclick={handleUpdateServerName}>
+								{updateServerNameLoading ? 'Saving...' : 'Save'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if updateServerDescriptionModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Edit server description</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { updateServerDescriptionModalOpen = false; }}>✕</button>
+						</div>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Server description</span>
+							<textarea class="textarea textarea-bordered w-full" rows="4" bind:value={updateServerDescriptionValue} placeholder="Server description"></textarea>
+						</label>
+
+						{#if updateServerDescriptionError}
+							<div class="alert alert-error py-2 text-sm"><span>{updateServerDescriptionError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { updateServerDescriptionModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={updateServerDescriptionLoading} onclick={handleUpdateServerDescription}>
+								{updateServerDescriptionLoading ? 'Saving...' : 'Save'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if updateServerVisibilityModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Edit server visibility</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { updateServerVisibilityModalOpen = false; }}>✕</button>
+						</div>
+
+						<label class="label cursor-pointer justify-start gap-3">
+							<input class="checkbox checkbox-sm" type="checkbox" bind:checked={updateServerVisibilityValue} />
+							<span class="label-text">Public server</span>
+						</label>
+						<p class="text-xs text-slate-400">Public servers are visible in discovery and anyone can join.</p>
+
+						{#if updateServerVisibilityError}
+							<div class="alert alert-error py-2 text-sm"><span>{updateServerVisibilityError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { updateServerVisibilityModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-primary" type="button" disabled={updateServerVisibilityLoading} onclick={handleUpdateServerVisibility}>
+								{updateServerVisibilityLoading ? 'Saving...' : 'Save'}
+							</button>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if deleteServerModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold text-error">Delete server</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { deleteServerModalOpen = false; }}>✕</button>
+						</div>
+
+						<p class="text-sm text-slate-300">Are you sure you want to delete this server? This cannot be undone.</p>
+
+						<label class="block w-full">
+							<span class="label-text block mb-2">Type "DELETE" to confirm</span>
+							<input class="input input-bordered w-full" bind:value={deleteServerConfirmText} placeholder="DELETE" />
+						</label>
+
+						{#if deleteServerError}
+							<div class="alert alert-error py-2 text-sm"><span>{deleteServerError}</span></div>
+						{/if}
+
+						<div class="flex gap-2 justify-end">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={() => { deleteServerModalOpen = false; }}>Cancel</button>
+							<button class="btn btn-sm btn-error" type="button" disabled={deleteServerLoading || deleteServerConfirmText !== 'DELETE'} onclick={handleDeleteServer}>
+								{deleteServerLoading ? 'Deleting...' : 'Delete'}
+							</button>
+						</div>
 					</div>
 				</div>
 			{/if}

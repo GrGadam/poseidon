@@ -14,6 +14,8 @@ export type ServerEntry = {
 	id: string;
 	name: string;
 	description: string;
+	avatarMime?: string | null;
+	avatarUrl?: string | null;
 	hasUnread: boolean;
 };
 
