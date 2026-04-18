@@ -70,6 +70,9 @@
 	let createChannelLoading = $state(false);
 	let serverSettingsMenuOpen = $state(false);
 	let serverSettingsMenuEl = $state<HTMLElement | null>(null);
+	let createServerModalEl = $state<HTMLElement | null>(null);
+	let joinServerModalEl = $state<HTMLElement | null>(null);
+	let ignoreModalOutsideCloseUntil = $state(0);
 	let channelSettingsMenuOpen = $state(false);
 	let channelSettingsMenuEl = $state<HTMLElement | null>(null);
 	let friendSettingsMenuOpen = $state(false);
@@ -877,6 +880,7 @@
 	};
 
 	const openCreateServerModal = () => {
+		ignoreModalOutsideCloseUntil = Date.now() + 200;
 		createServerModalOpen = true;
 		createServerError = null;
 		createServerMessage = null;
@@ -889,6 +893,7 @@
 	};
 
 	const openJoinServerModal = async () => {
+		ignoreModalOutsideCloseUntil = Date.now() + 200;
 		joinServerModalOpen = true;
 		publicServersError = null;
 		joinServerMessage = null;
@@ -1751,6 +1756,7 @@
 
 		const handleOutsideClick = (event: MouseEvent) => {
 			const target = event.target as Node | null;
+			const ignoreModalOutsideClose = Date.now() < ignoreModalOutsideCloseUntil;
 
 			if (settingsMenuOpen && settingsMenuEl && target && !settingsMenuEl.contains(target)) {
 				settingsMenuOpen = false;
@@ -1766,6 +1772,26 @@
 
 			if (channelSettingsMenuOpen && channelSettingsMenuEl && target && !channelSettingsMenuEl.contains(target)) {
 				channelSettingsMenuOpen = false;
+			}
+
+			if (
+				!ignoreModalOutsideClose &&
+				createServerModalOpen &&
+				createServerModalEl &&
+				target &&
+				!createServerModalEl.contains(target)
+			) {
+				closeCreateServerModal();
+			}
+
+			if (
+				!ignoreModalOutsideClose &&
+				joinServerModalOpen &&
+				joinServerModalEl &&
+				target &&
+				!joinServerModalEl.contains(target)
+			) {
+				closeJoinServerModal();
 			}
 		};
 
@@ -1903,11 +1929,17 @@
 						<div class="alert alert-success py-2 text-sm mb-3"><span>{profileUploadMessage}</span></div>
 					{/if}
 
-					<div class="tabs tabs-boxed bg-slate-800/70 mb-3 w-full">
-						<button class={`tab flex-1 ${$selectedTab === 'friends' ? 'tab-active' : ''}`} onclick={() => { $selectedTab = 'friends'; }}>
+					<div class="tabs tabs-boxed bg-slate-800/60 border border-slate-700/70 mb-3 w-full p-1">
+						<button
+							class={`tab flex-1 text-base transition-colors ${$selectedTab === 'friends' ? 'bg-sky-800/85 text-sky-100 font-extrabold border border-sky-400/45 shadow shadow-sky-950/40' : 'text-slate-300/90 font-semibold hover:bg-slate-700/70'}`}
+							onclick={() => { $selectedTab = 'friends'; }}
+						>
 							Friends
 						</button>
-						<button class={`tab flex-1 ${$selectedTab === 'servers' ? 'tab-active' : ''}`} onclick={() => { $selectedTab = 'servers'; }}>
+						<button
+							class={`tab flex-1 text-base transition-colors ${$selectedTab === 'servers' ? 'bg-sky-800/85 text-sky-100 font-extrabold border border-sky-400/45 shadow shadow-sky-950/40' : 'text-slate-300/90 font-semibold hover:bg-slate-700/70'}`}
+							onclick={() => { $selectedTab = 'servers'; }}
+						>
 							Servers
 						</button>
 					</div>
@@ -2134,7 +2166,7 @@
 
 								{#if friendSettingsMenuOpen}
 									<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
-										<li><button type="button" class="text-error" onclick={handleDeleteSelectedFriend}>Delete friend and conversation</button></li>
+										<li><button type="button" class="text-error" onclick={handleDeleteSelectedFriend}>Delete friend</button></li>
 									</ul>
 								{/if}
 							</div>
@@ -2355,7 +2387,10 @@
 
 			{#if joinServerModalOpen}
 				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
-					<div class="w-full max-w-2xl rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3 max-h-[85vh] overflow-hidden flex flex-col">
+					<div
+						bind:this={joinServerModalEl}
+						class="w-full max-w-2xl rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3 max-h-[85vh] overflow-hidden flex flex-col"
+					>
 						<div class="h-10 flex items-center justify-between">
 							<button class="btn btn-sm btn-ghost" type="button" onclick={closeJoinServerModal}>Back</button>
 							<p class="font-semibold flex-1 text-center">Public servers</p>
@@ -2445,10 +2480,14 @@
 
 			{#if createServerModalOpen}
 				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
-					<div class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
-						<div class="flex items-center justify-between">
-							<h3 class="font-semibold">Create server</h3>
-							<button class="btn btn-ghost btn-xs" type="button" onclick={closeCreateServerModal}>✕</button>
+					<div
+						bind:this={createServerModalEl}
+						class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3"
+					>
+						<div class="h-10 flex items-center justify-between">
+							<button class="btn btn-sm btn-ghost" type="button" onclick={closeCreateServerModal}>Back</button>
+							<p class="font-semibold flex-1 text-center">Create server</p>
+							<div class="w-16"></div>
 						</div>
 
 						<label class="block w-full">
