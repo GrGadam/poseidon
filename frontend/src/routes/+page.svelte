@@ -112,6 +112,7 @@
 	let lastLoadedToken = $state<string | null>(null);
 	let profileUploadMessage = $state<string | null>(null);
 	let profileUploadError = $state<string | null>(null);
+	let currentUserAvatarUrl = $state<string | null>(null);
 	let serverAvatarUploadMessage = $state<string | null>(null);
 	let serverAvatarUploadError = $state<string | null>(null);
 	let serverAvatarMessageTimeout = $state<ReturnType<typeof setTimeout> | null>(null);
@@ -188,6 +189,31 @@
 
 		return URL.createObjectURL(blob);
 	};
+
+	const setCurrentUserAvatarUrl = (nextUrl: string | null) => {
+		if (
+			currentUserAvatarUrl &&
+			currentUserAvatarUrl.startsWith('blob:') &&
+			currentUserAvatarUrl !== nextUrl
+		) {
+			URL.revokeObjectURL(currentUserAvatarUrl);
+		}
+
+		currentUserAvatarUrl = nextUrl;
+	};
+
+	const refreshCurrentUserAvatar = async () => {
+		const token = $session.accessToken;
+		const userId = $session.userId;
+		if (!token || !userId) {
+			setCurrentUserAvatarUrl(null);
+			return;
+		}
+
+		const avatarUrl = await loadUserAvatarUrl(token, userId);
+		setCurrentUserAvatarUrl(avatarUrl);
+	};
+
 	const seenDmCreatedIds = new Set<string>();
 	const seenDmCreatedOrder: string[] = [];
 
@@ -1517,6 +1543,7 @@
 				markAvatarDirty($session.userId);
 			}
 			await Promise.all([refreshFriends(token), refreshPendingRequests(token)]);
+			await refreshCurrentUserAvatar();
 			profileUploadMessage = 'Profile image uploaded.';
 		} catch (error) {
 			profileUploadError = error instanceof Error ? error.message : 'Failed to upload profile image.';
@@ -1531,6 +1558,8 @@
 				URL.revokeObjectURL(item.avatarUrl);
 			}
 		}
+
+		setCurrentUserAvatarUrl(null);
 
 		settingsMenuOpen = false;
 		activeChat = 'none';
@@ -1644,7 +1673,11 @@
 
 			if ((kind === 'user.avatar.updated' || kind === 'user.updated') && payload.user_id && $session.accessToken) {
 				markAvatarDirty(payload.user_id);
-				await Promise.all([refreshFriends($session.accessToken), refreshPendingRequests($session.accessToken)]);
+				await Promise.all([
+					refreshFriends($session.accessToken),
+					refreshPendingRequests($session.accessToken),
+					payload.user_id === $session.userId ? refreshCurrentUserAvatar() : Promise.resolve()
+				]);
 				return;
 			}
 
@@ -1807,12 +1840,13 @@
 		const token = $session.accessToken;
 		if (!token) {
 			lastLoadedToken = null;
+			setCurrentUserAvatarUrl(null);
 			return;
 		}
 
 		if (lastLoadedToken !== token) {
 			lastLoadedToken = token;
-			void Promise.all([refreshFriendsData(), refreshServersData()]);
+			void Promise.all([refreshFriendsData(), refreshServersData(), refreshCurrentUserAvatar()]);
 		}
 	});
 </script>
@@ -1890,7 +1924,18 @@
 			{#if activeChat === 'none'}
 				<section class="h-full p-3 overflow-auto">
 					<div class="h-12 border border-slate-700/60 rounded-md px-3 mb-3 flex items-center justify-between bg-slate-900/70">
-						<p class="text-sm text-slate-300 truncate">{$session.username ?? 'User'}</p>
+						<div class="flex items-center gap-2 min-w-0">
+							<div class="avatar">
+								<div class="w-8 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
+									{#if currentUserAvatarUrl}
+										<img src={currentUserAvatarUrl} alt="Your profile" class="h-full w-full object-cover" />
+									{:else}
+										<span class="text-xs font-semibold">{$session.username?.slice(0, 1).toUpperCase() ?? 'U'}</span>
+									{/if}
+								</div>
+							</div>
+							<p class="text-sm text-slate-300 truncate">{$session.username ?? 'User'}</p>
+						</div>
 						<div class="relative" bind:this={settingsMenuEl}>
 							<button
 								type="button"
