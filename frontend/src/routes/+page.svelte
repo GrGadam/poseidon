@@ -3072,8 +3072,8 @@
 						{:else}
 							<ul class="space-y-2">
 								{#each serverInvites as invite}
-									<li class="rounded-md border border-slate-700/70 bg-slate-800/40 px-3 py-2 space-y-2">
-										<div class="flex items-center gap-3 min-w-0">
+									<li class="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-800/40 px-3 py-2">
+										<div class="flex items-center gap-3 min-w-0 flex-1">
 											<div class="avatar">
 												<div class="w-9 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
 													{#if invite.serverAvatarUrl}
@@ -3088,14 +3088,14 @@
 												<p class="text-xs text-slate-400 truncate">Invited by {invite.fromUserName}</p>
 											</div>
 										</div>
-										<div class="flex items-center justify-end gap-2">
+										<div class="flex items-center gap-2 pl-2">
 											<button
 												class="btn btn-success btn-xs"
 												type="button"
 												disabled={serverInviteActionInProgressId === invite.inviteId}
 												onclick={() => void handleServerInviteDecision(invite.inviteId, 'accept')}
 											>
-												Accept
+												✓
 											</button>
 											<button
 												class="btn btn-error btn-xs"
@@ -3103,7 +3103,7 @@
 												disabled={serverInviteActionInProgressId === invite.inviteId}
 												onclick={() => void handleServerInviteDecision(invite.inviteId, 'reject')}
 											>
-												Reject
+												✕
 											</button>
 										</div>
 									</li>

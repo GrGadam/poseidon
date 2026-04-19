@@ -986,7 +986,20 @@ pub async fn get_server_avatar(
 
     let is_public: bool = row.get("is_public");
     if !is_public {
-        let _ = get_role(&state, &user.user_id, &server_id).await?;
+        let member_role = get_role(&state, &user.user_id, &server_id).await;
+        if member_role.is_err() {
+            let invite_exists = sqlx::query(
+                "SELECT 1 FROM server_user_invites WHERE server_id = ? AND to_user_id = ?",
+            )
+            .bind(&server_id)
+            .bind(&user.user_id)
+            .fetch_optional(&state.db)
+            .await?;
+
+            if invite_exists.is_none() {
+                return Err(AppError::Forbidden);
+            }
+        }
     }
 
     let mime: Option<String> = row.try_get("avatar_mime").ok();
