@@ -2076,7 +2076,7 @@
 
 					{#if $selectedTab === 'friends'}
 						<div class="mb-3">
-							<button class="btn btn-primary btn-sm w-full" type="button" onclick={openAddFriendModal}>+ Add friend</button>
+							<button class="btn btn-primary btn-sm w-full" type="button" onclick={openAddFriendModal}>Add friend</button>
 						</div>
 
 						{#if $friendPending.length > 0}
@@ -2325,7 +2325,7 @@
 						{/if}
 					</div>
 
-					<div class="flex-1 overflow-auto p-4 space-y-2" bind:this={chatContainer}>
+					<div class="flex-1 overflow-auto p-4 space-y-1" bind:this={chatContainer}>
 						{#if chatLoading}
 							<p class="text-sm text-slate-400">Loading messages...</p>
 						{:else if chatMessages.length === 0}
@@ -2333,20 +2333,32 @@
 						{:else}
 							{#each chatMessages as msg, idx}
 								<div class={`chat ${msg.userId === $session.userId ? 'chat-end' : 'chat-start'}`} data-msg-index={idx}>
-									{#if activeChat === 'server'}
+									{#if activeChat === 'server' || activeChat === 'friend'}
 										<div class={`chat-image avatar ${msg.userId === $session.userId ? 'order-2' : ''}`}>
 											<div class="w-8 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
-												{#if msg.authorAvatarUrl}
+												{#if activeChat === 'server' && msg.authorAvatarUrl}
 													<img src={msg.authorAvatarUrl} alt={`${msg.authorName ?? 'User'} avatar`} class="h-full w-full object-cover" />
+												{:else if activeChat === 'friend' && msg.userId === $session.userId && currentUserAvatarUrl}
+													<img src={currentUserAvatarUrl} alt="Your avatar" class="h-full w-full object-cover" />
+												{:else if activeChat === 'friend' && msg.userId !== $session.userId && $selectedFriend?.avatarUrl}
+													<img src={$selectedFriend.avatarUrl} alt={`${$selectedFriend.username} avatar`} class="h-full w-full object-cover" />
 												{:else}
-													<span class="text-[10px] font-semibold">{(msg.authorName ?? 'U').slice(0, 1).toUpperCase()}</span>
+													<span class="text-[10px] font-semibold">
+														{activeChat === 'friend'
+															? (msg.userId === $session.userId
+																? ($session.username?.slice(0, 1).toUpperCase() ?? 'U')
+																: ($selectedFriend?.username?.slice(0, 1).toUpperCase() ?? 'U'))
+															: (msg.authorName ?? 'U').slice(0, 1).toUpperCase()}
+													</span>
 												{/if}
 											</div>
 										</div>
 									{/if}
-									{#if activeChat === 'server'}
+									{#if activeChat === 'server' || activeChat === 'friend'}
 										<div class="chat-header text-[11px] text-slate-300 mb-1">
-											{msg.userId === $session.userId ? ($session.username ?? msg.authorName ?? 'You') : (msg.authorName ?? 'Unknown user')}
+											{activeChat === 'friend'
+												? (msg.userId === $session.userId ? ($session.username ?? 'You') : ($selectedFriend?.username ?? 'Unknown user'))
+												: (msg.userId === $session.userId ? ($session.username ?? msg.authorName ?? 'You') : (msg.authorName ?? 'Unknown user'))}
 										</div>
 									{/if}
 									<div
