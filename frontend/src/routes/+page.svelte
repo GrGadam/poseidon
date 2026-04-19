@@ -167,7 +167,8 @@
 	type MessagePart =
 		| { type: 'text'; value: string }
 		| { type: 'link'; url: string }
-		| { type: 'image'; url: string };
+		| { type: 'image'; url: string }
+		| { type: 'video'; url: string };
 
 	let activeChat = $state<ChatView>('none');
 	let selectedChannel = $state<ServerChannel | null>(null);
@@ -226,6 +227,16 @@
 		}
 	};
 
+	const isVideoLikeUrl = (url: string): boolean => {
+		try {
+			const parsed = new URL(url);
+			const pathname = parsed.pathname.toLowerCase();
+			return /\.(mp4|webm|ogg|mov|m4v)$/.test(pathname);
+		} catch {
+			return false;
+		}
+	};
+
 	const parseMessageParts = (content: string): MessagePart[] => {
 		const parts: MessagePart[] = [];
 		let cursor = 0;
@@ -239,7 +250,9 @@
 
 			const { cleanUrl, suffix } = trimLinkSuffix(rawUrl);
 			if (cleanUrl) {
-				if (isImageLikeUrl(cleanUrl)) {
+				if (isVideoLikeUrl(cleanUrl)) {
+					parts.push({ type: 'video', url: cleanUrl });
+				} else if (isImageLikeUrl(cleanUrl)) {
 					parts.push({ type: 'image', url: cleanUrl });
 				} else {
 					parts.push({ type: 'link', url: cleanUrl });
@@ -826,6 +839,22 @@
 		}, 0);
 	};
 
+	const keepChatAtBottomOnMediaLoad = (messageIndex: number) => {
+		setTimeout(() => {
+			if (!chatContainer) {
+				return;
+			}
+
+			const distanceFromBottom =
+				chatContainer.scrollHeight - (chatContainer.scrollTop + chatContainer.clientHeight);
+			const isRecentMessage = messageIndex >= Math.max(0, chatMessages.length - 4);
+
+			if (isRecentMessage || distanceFromBottom <= 180) {
+				chatContainer.scrollTop = chatContainer.scrollHeight;
+			}
+		}, 0);
+	};
+
 	const loadActiveMessages = async (options?: { silent?: boolean; forceBottom?: boolean }) => {
 		const token = $session.accessToken;
 		if (!token) {
@@ -1020,6 +1049,10 @@
 				const sent = await apiClient.dmSendMessage(token, activeDmThreadId, content);
 				const mapped = await toChatMessage(sent);
 				chatMessages = [...chatMessages, mapped].sort(byCreatedAtAsc);
+				await tick();
+				if (chatContainer) {
+					chatContainer.scrollTop = chatContainer.scrollHeight;
+				}
 				const friendId = friendByDmThreadId[activeDmThreadId];
 				if (friendId) {
 					setFriendLastMessage(friendId, sent.content);
@@ -1034,6 +1067,10 @@
 				const sent = await apiClient.channelSendMessage(token, selectedChannel.id, content);
 				const mapped = await toChatMessage(sent);
 				chatMessages = [...chatMessages, mapped].sort(byCreatedAtAsc);
+				await tick();
+				if (chatContainer) {
+					chatContainer.scrollTop = chatContainer.scrollHeight;
+				}
 				chatInput = '';
 				chatEmojiPickerOpen = false;
 				return;
@@ -2935,7 +2972,7 @@
 													>
 														{part.url}
 													</a>
-												{:else}
+												{:else if part.type === 'image'}
 													<a
 														href={part.url}
 														target="_blank"
@@ -2947,9 +2984,33 @@
 															src={part.url}
 															alt="Shared media"
 															loading="lazy"
+															onload={() => keepChatAtBottomOnMediaLoad(idx)}
+															onerror={() => keepChatAtBottomOnMediaLoad(idx)}
 															class="mt-1 max-h-80 max-w-full rounded-md border border-slate-500/50 object-contain bg-black/20"
 														/>
 													</a>
+												{:else}
+													<div class="mt-1 max-w-full">
+														<video
+															src={part.url}
+															controls
+															preload="metadata"
+															onloadedmetadata={() => keepChatAtBottomOnMediaLoad(idx)}
+															onerror={() => keepChatAtBottomOnMediaLoad(idx)}
+															class="max-h-80 max-w-full rounded-md border border-slate-500/50 bg-black/30"
+														>
+															<track kind="captions" srclang="en" label="No captions" />
+														</video>
+														<a
+															href={part.url}
+															target="_blank"
+															rel="noopener noreferrer"
+															class="mt-1 inline-block text-[11px] underline break-all"
+															onclick={(event) => void openMessageUrl(event, part.url)}
+														>
+															Open video source
+														</a>
+													</div>
 												{/if}
 											{/each}
 										</div>
