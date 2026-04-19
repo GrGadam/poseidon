@@ -173,7 +173,7 @@ pub async fn list_messages(
     assert_thread_membership(&state, &user.user_id, &thread_id).await?;
 
     let rows = sqlx::query(
-        "SELECT id, thread_id, user_id, content, created_at
+        "SELECT id, thread_id, user_id, content, created_at, updated_at
          FROM dm_messages
          WHERE thread_id = ?
          ORDER BY created_at DESC
@@ -191,6 +191,7 @@ pub async fn list_messages(
             user_id: r.get("user_id"),
             content: r.get("content"),
             created_at: r.get("created_at"),
+            updated_at: r.try_get("updated_at").ok(),
         })
         .collect::<Vec<_>>();
 
@@ -241,6 +242,7 @@ pub async fn send_message(
         user_id: user.user_id,
         content: payload.content,
         created_at: now,
+        updated_at: None,
     }))
 }
 
@@ -276,8 +278,11 @@ pub async fn edit_message(
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query("UPDATE dm_messages SET content = ? WHERE id = ?")
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+
+    sqlx::query("UPDATE dm_messages SET content = ?, updated_at = ? WHERE id = ?")
         .bind(payload.content)
+        .bind(now)
         .bind(&message_id)
         .execute(&state.db)
         .await?;

@@ -113,6 +113,7 @@ pub struct MessageDto {
     pub avatar_mime: Option<String>,
     pub content: String,
     pub created_at: i64,
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -149,4 +150,5 @@ pub struct DmMessageDto {
     pub user_id: String,
     pub content: String,
     pub created_at: i64,
+    pub updated_at: Option<i64>,
 }

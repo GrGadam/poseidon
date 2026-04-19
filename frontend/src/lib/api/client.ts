@@ -14,6 +14,7 @@ export type DmMessageResponse = {
 	user_id: string;
 	content: string;
 	created_at: number;
+	updated_at?: number | null;
 };
 
 export type ChannelResponse = {
@@ -32,6 +33,7 @@ export type ChannelMessageResponse = {
 	avatar_mime?: string | null;
 	content: string;
 	created_at: number;
+	updated_at?: number | null;
 };
 
 export type ServerResponse = {
@@ -149,10 +151,18 @@ export const apiClient = {
 		request<DmMessageResponse[]>(`/dm/threads/${encodeURIComponent(threadId)}/messages`, 'GET', undefined, accessToken),
 	dmSendMessage: (accessToken: string, threadId: string, content: string) =>
 		request<DmMessageResponse>(`/dm/threads/${encodeURIComponent(threadId)}/messages`, 'POST', { content }, accessToken),
+	dmEditMessage: (accessToken: string, messageId: string, content: string) =>
+		request(`/dm/messages/${encodeURIComponent(messageId)}`, 'PATCH', { content }, accessToken),
+	dmDeleteMessage: (accessToken: string, messageId: string) =>
+		request(`/dm/messages/${encodeURIComponent(messageId)}`, 'DELETE', undefined, accessToken),
 	channelMessages: (accessToken: string, channelId: string) =>
 		request<ChannelMessageResponse[]>(`/channels/${encodeURIComponent(channelId)}/messages`, 'GET', undefined, accessToken),
 	channelSendMessage: (accessToken: string, channelId: string, content: string) =>
 		request<ChannelMessageResponse>(`/channels/${encodeURIComponent(channelId)}/messages`, 'POST', { content }, accessToken),
+	channelEditMessage: (accessToken: string, messageId: string, content: string) =>
+		request(`/messages/${encodeURIComponent(messageId)}`, 'PATCH', { content }, accessToken),
+	channelDeleteMessage: (accessToken: string, messageId: string) =>
+		request(`/messages/${encodeURIComponent(messageId)}`, 'DELETE', undefined, accessToken),
 	logout: (accessToken: string) => request('/auth/logout', 'POST', undefined, accessToken),
 	changeMyPassword: (accessToken: string, currentPassword: string, newPassword: string) =>
 		request('/users/me/password', 'POST', { current_password: currentPassword, new_password: newPassword }, accessToken),

@@ -137,6 +137,7 @@
 		authorAvatarUrl?: string | null;
 		content: string;
 		createdAt: number;
+		updatedAt?: number | null;
 	};
 
 	let activeChat = $state<ChatView>('none');
@@ -144,6 +145,7 @@
 	let activeDmThreadId = $state<string | null>(null);
 	let chatMessages = $state<ChatMessage[]>([]);
 	let chatInput = $state('');
+	let chatInputEl = $state<HTMLInputElement | null>(null);
 	let chatEmojiPickerOpen = $state(false);
 	let chatEmojiPickerEl = $state<HTMLElement | null>(null);
 	let chatEmojiToggleButtonEl = $state<HTMLButtonElement | null>(null);
@@ -160,6 +162,8 @@
 	let leaveServerLoading = $state(false);
 	let leaveServerError = $state<string | null>(null);
 	let messageAuthorAvatarUrls = $state<Record<string, string | null>>({});
+	let messageActionsOpenForId = $state<string | null>(null);
+	let editingMessageId = $state<string | null>(null);
 
 	const loadUserAvatarUrl = async (accessToken: string, userId: string): Promise<string | null> => {
 		const res = await fetch(`${apiConfig.baseUrl}/users/${encodeURIComponent(userId)}/avatar`, {
@@ -570,7 +574,8 @@
 			id: item.id,
 			userId: item.user_id,
 			content: item.content,
-			createdAt: item.created_at
+			createdAt: item.created_at,
+			updatedAt: item.updated_at ?? null
 		};
 
 		if ('channel_id' in item) {
@@ -723,7 +728,7 @@
 		}
 
 		const content = chatInput.trim();
-		if (!content) {
+		if (!content && !editingMessageId) {
 			return;
 		}
 
@@ -731,6 +736,60 @@
 		chatError = null;
 
 		try {
+			if (editingMessageId) {
+				const messageId = editingMessageId;
+				const targetMessage = chatMessages.find((msg) => msg.id === messageId);
+				if (!targetMessage) {
+					editingMessageId = null;
+					chatInput = '';
+					chatError = 'Message no longer exists.';
+					return;
+				}
+
+				if (!content) {
+					chatError = 'Message cannot be empty.';
+					return;
+				}
+
+				if (content === targetMessage.content) {
+					editingMessageId = null;
+					chatInput = '';
+					return;
+				}
+
+				const previousMessages = chatMessages;
+				const now = Math.floor(Date.now() / 1000);
+				chatMessages = chatMessages.map((msg) =>
+					msg.id === messageId
+						? {
+							...msg,
+							content,
+							updatedAt: now
+						}
+						: msg
+				);
+
+				if (activeChat === 'friend') {
+					await apiClient.dmEditMessage(token, messageId, content);
+					editingMessageId = null;
+					chatInput = '';
+					chatEmojiPickerOpen = false;
+					return;
+				}
+
+				if (activeChat === 'server') {
+					await apiClient.channelEditMessage(token, messageId, content);
+					editingMessageId = null;
+					chatInput = '';
+					chatEmojiPickerOpen = false;
+					return;
+				}
+
+				chatMessages = previousMessages;
+				chatError = 'No active chat selected.';
+				return;
+			}
+
 			if (activeChat === 'friend' && activeDmThreadId) {
 				const sent = await apiClient.dmSendMessage(token, activeDmThreadId, content);
 				const mapped = await toChatMessage(sent);
@@ -760,6 +819,55 @@
 		} finally {
 			chatSending = false;
 		}
+	};
+
+	const handleDeleteChatMessage = async (messageId: string) => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		const previousMessages = chatMessages;
+		messageActionsOpenForId = null;
+		if (editingMessageId === messageId) {
+			editingMessageId = null;
+			chatInput = '';
+		}
+		chatError = null;
+		chatMessages = chatMessages.filter((msg) => msg.id !== messageId);
+
+		try {
+			if (activeChat === 'friend') {
+				await apiClient.dmDeleteMessage(token, messageId);
+				return;
+			}
+
+			if (activeChat === 'server') {
+				await apiClient.channelDeleteMessage(token, messageId);
+				return;
+			}
+
+			chatMessages = previousMessages;
+		} catch (error) {
+			chatMessages = previousMessages;
+			chatError = error instanceof Error ? error.message : 'Failed to delete message.';
+		}
+	};
+
+	const handleStartEditChatMessage = (messageId: string, content: string) => {
+		messageActionsOpenForId = null;
+		chatError = null;
+		editingMessageId = messageId;
+		chatInput = content;
+		void tick().then(() => {
+			chatInputEl?.focus();
+			chatInputEl?.setSelectionRange(0, chatInputEl.value.length);
+		});
+	};
+
+	const handleCancelEditChatMessage = () => {
+		editingMessageId = null;
+		chatInput = '';
 	};
 
 	const handleCreateFriendRequest = async () => {
@@ -836,6 +944,7 @@
 		selectFriend(friend);
 		selectedChannel = null;
 		chatInput = '';
+		editingMessageId = null;
 		chatEmojiPickerOpen = false;
 		chatMessages = [];
 		chatError = null;
@@ -870,6 +979,7 @@
 		chatMessages = [];
 		chatError = null;
 		chatInput = '';
+		editingMessageId = null;
 		chatEmojiPickerOpen = false;
 
 		try {
@@ -889,6 +999,7 @@
 		channelSettingsMenuOpen = false;
 		activeDmThreadId = null;
 		chatInput = '';
+		editingMessageId = null;
 		chatEmojiPickerOpen = false;
 		chatMessages = [];
 		chatError = null;
@@ -905,6 +1016,7 @@
 		chatMessages = [];
 		chatError = null;
 		chatInput = '';
+		editingMessageId = null;
 		chatEmojiPickerOpen = false;
 	};
 
@@ -916,6 +1028,7 @@
 			chatMessages = [];
 			chatError = null;
 			chatInput = '';
+			editingMessageId = null;
 			chatEmojiPickerOpen = false;
 			return;
 		}
@@ -947,6 +1060,7 @@
 			chatMessages = [];
 			chatError = null;
 			chatInput = '';
+			editingMessageId = null;
 			selectedServer.set(null);
 			await refreshServersData();
 			if (joinServerModalOpen) {
@@ -1864,7 +1978,16 @@
 
 		const handleOutsideClick = (event: MouseEvent) => {
 			const target = event.target as Node | null;
+			const targetElement = event.target instanceof Element ? event.target : null;
 			const ignoreModalOutsideClose = Date.now() < ignoreModalOutsideCloseUntil;
+
+			if (
+				messageActionsOpenForId &&
+				targetElement &&
+				!targetElement.closest('[data-message-actions]')
+			) {
+				messageActionsOpenForId = null;
+			}
 
 			if (settingsMenuOpen && settingsMenuEl && target && !settingsMenuEl.contains(target)) {
 				settingsMenuOpen = false;
@@ -2367,7 +2490,43 @@
 										{msg.content}
 									</div>
 									<div class="chat-footer text-[10px] text-slate-500 mt-1">
-										{new Date(msg.createdAt * 1000).toLocaleTimeString()}
+										<div class="flex items-center gap-2">
+											<span>{new Date(msg.createdAt * 1000).toLocaleTimeString()}</span>
+											{#if msg.updatedAt}
+												<span class="italic">(edited)</span>
+											{/if}
+											{#if msg.userId === $session.userId}
+												<div class="relative" data-message-actions>
+													<button
+														type="button"
+														class="btn btn-ghost btn-xs h-5 min-h-0 px-1"
+														onclick={() => {
+															messageActionsOpenForId = messageActionsOpenForId === msg.id ? null : msg.id;
+														}}
+													>
+														⋯
+													</button>
+													{#if messageActionsOpenForId === msg.id}
+														<div class="absolute right-0 bottom-6 z-20 rounded-md border border-slate-700 bg-slate-900/95 p-1 shadow">
+															<button
+																type="button"
+																class="btn btn-ghost btn-xs whitespace-nowrap"
+																onclick={() => handleStartEditChatMessage(msg.id, msg.content)}
+															>
+																Edit
+															</button>
+															<button
+																type="button"
+																class="btn btn-ghost btn-xs text-error whitespace-nowrap"
+																onclick={() => void handleDeleteChatMessage(msg.id)}
+															>
+																Delete
+															</button>
+														</div>
+													{/if}
+												</div>
+											{/if}
+										</div>
 									</div>
 								</div>
 							{/each}
@@ -2379,6 +2538,12 @@
 							<div class="alert alert-error py-2 text-sm mb-2"><span>{chatError}</span></div>
 						{/if}
 						<div class="w-full space-y-2">
+							{#if editingMessageId}
+								<div class="flex items-center justify-between rounded-md border border-slate-700 bg-slate-900/70 px-3 py-2 text-xs text-slate-300">
+									<span>Editing message. Press Esc to cancel.</span>
+									<button type="button" class="btn btn-ghost btn-xs" onclick={handleCancelEditChatMessage}>Cancel</button>
+								</div>
+							{/if}
 							{#if (activeChat === 'friend' || activeChat === 'server') && chatEmojiPickerOpen}
 								<div class="flex justify-center" bind:this={chatEmojiPickerEl}>
 									<div class="w-full max-w-md rounded-md border border-slate-700 overflow-hidden bg-slate-950">
@@ -2398,10 +2563,17 @@
 									😊
 								</button>
 								<input
+									bind:this={chatInputEl}
 									class="input input-bordered join-item flex-1"
-									placeholder="Type a message..."
+									placeholder={editingMessageId ? 'Edit your message...' : 'Type a message...'}
 									bind:value={chatInput}
 									onkeydown={(event) => {
+										if (event.key === 'Escape' && editingMessageId) {
+											event.preventDefault();
+											handleCancelEditChatMessage();
+											return;
+										}
+
 										if (event.key === 'Enter' && !event.shiftKey) {
 											event.preventDefault();
 											void handleSendChatMessage();
@@ -2409,7 +2581,7 @@
 									}}
 								/>
 								<button class="btn join-item btn-primary" onclick={handleSendChatMessage} disabled={chatSending}>
-									{chatSending ? 'Sending...' : 'Send'}
+									{chatSending ? (editingMessageId ? 'Saving...' : 'Sending...') : (editingMessageId ? 'Save' : 'Send')}
 								</button>
 							</div>
 						</div>

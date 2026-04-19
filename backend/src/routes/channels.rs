@@ -103,6 +103,7 @@ pub async fn send_message(
         avatar_mime: sender_avatar_mime,
         content: payload.content,
         created_at: now,
+        updated_at: None,
     }))
 }
 
@@ -121,7 +122,7 @@ pub async fn list_messages(
     assert_channel_membership(&state, &user.user_id, &channel_id).await?;
 
     let rows = sqlx::query(
-        "SELECT m.id, m.channel_id, m.user_id, m.content, m.created_at,
+        "SELECT m.id, m.channel_id, m.user_id, m.content, m.created_at, m.updated_at,
                 u.username, u.avatar_mime
          FROM channel_messages m
          JOIN users u ON u.id = m.user_id
@@ -143,6 +144,7 @@ pub async fn list_messages(
             avatar_mime: r.try_get("avatar_mime").ok(),
             content: r.get("content"),
             created_at: r.get("created_at"),
+            updated_at: r.try_get("updated_at").ok(),
         })
         .collect();
 
@@ -163,6 +165,10 @@ pub async fn edit_message(
     Path(message_id): Path<String>,
     Json(payload): Json<EditMessageRequest>,
 ) -> Result<Json<OkResponse>, AppError> {
+    if payload.content.trim().is_empty() {
+        return Err(AppError::BadRequest("content cannot be empty".to_string()));
+    }
+
     let exists = sqlx::query("SELECT user_id, channel_id FROM channel_messages WHERE id = ?")
         .bind(&message_id)
         .fetch_optional(&state.db)
@@ -177,8 +183,11 @@ pub async fn edit_message(
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query("UPDATE channel_messages SET content = ? WHERE id = ?")
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+
+    sqlx::query("UPDATE channel_messages SET content = ?, updated_at = ? WHERE id = ?")
         .bind(payload.content.clone())
+        .bind(now)
         .bind(&message_id)
         .execute(&state.db)
         .await?;
