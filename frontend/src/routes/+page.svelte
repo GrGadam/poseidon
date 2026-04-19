@@ -2546,8 +2546,8 @@
 		</div>
 	</section>
 {:else}
-	<main class="h-screen w-full p-2">
-		<div class="h-full w-full overflow-hidden border border-slate-700/70 bg-slate-900/85 flex flex-col">
+	<main class="h-screen w-full overflow-hidden">
+		<div class="h-full w-full overflow-hidden bg-slate-900 flex flex-col">
 			<div class="flex-1 min-h-0">
 			{#if activeChat === 'none'}
 				<section class="h-full p-3 overflow-auto">
