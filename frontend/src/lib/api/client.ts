@@ -28,6 +28,8 @@ export type ChannelMessageResponse = {
 	id: string;
 	channel_id: string;
 	user_id: string;
+	username?: string | null;
+	avatar_mime?: string | null;
 	content: string;
 	created_at: number;
 };

@@ -130,13 +130,23 @@
 
 	type ChatView = 'none' | 'friend' | 'server' | 'server-channels';
 	type ServerChannel = { id: string; name: string; emoji: string };
-	type ChatMessage = { id: string; userId: string; content: string; createdAt: number };
+	type ChatMessage = {
+		id: string;
+		userId: string;
+		authorName?: string;
+		authorAvatarUrl?: string | null;
+		content: string;
+		createdAt: number;
+	};
 
 	let activeChat = $state<ChatView>('none');
 	let selectedChannel = $state<ServerChannel | null>(null);
 	let activeDmThreadId = $state<string | null>(null);
 	let chatMessages = $state<ChatMessage[]>([]);
 	let chatInput = $state('');
+	let chatEmojiPickerOpen = $state(false);
+	let chatEmojiPickerEl = $state<HTMLElement | null>(null);
+	let chatEmojiToggleButtonEl = $state<HTMLButtonElement | null>(null);
 	let chatLoading = $state(false);
 	let chatSending = $state(false);
 	let chatError = $state<string | null>(null);
@@ -149,6 +159,7 @@
 	let onlineUserIdsSnapshot = $state<string[]>([]);
 	let leaveServerLoading = $state(false);
 	let leaveServerError = $state<string | null>(null);
+	let messageAuthorAvatarUrls = $state<Record<string, string | null>>({});
 
 	const loadUserAvatarUrl = async (accessToken: string, userId: string): Promise<string | null> => {
 		const res = await fetch(`${apiConfig.baseUrl}/users/${encodeURIComponent(userId)}/avatar`, {
@@ -212,6 +223,38 @@
 
 		const avatarUrl = await loadUserAvatarUrl(token, userId);
 		setCurrentUserAvatarUrl(avatarUrl);
+	};
+
+	const getOrLoadMessageAuthorAvatarUrl = async (userId: string): Promise<string | null> => {
+		const cached = messageAuthorAvatarUrls[userId];
+		if (cached !== undefined) {
+			return cached;
+		}
+
+		const token = $session.accessToken;
+		if (!token) {
+			messageAuthorAvatarUrls = {
+				...messageAuthorAvatarUrls,
+				[userId]: null
+			};
+			return null;
+		}
+
+		const avatarUrl = await loadUserAvatarUrl(token, userId);
+		messageAuthorAvatarUrls = {
+			...messageAuthorAvatarUrls,
+			[userId]: avatarUrl
+		};
+		return avatarUrl;
+	};
+
+	const clearMessageAuthorAvatarCache = () => {
+		for (const avatarUrl of Object.values(messageAuthorAvatarUrls)) {
+			if (avatarUrl?.startsWith('blob:')) {
+				URL.revokeObjectURL(avatarUrl);
+			}
+		}
+		messageAuthorAvatarUrls = {};
 	};
 
 	const seenDmCreatedIds = new Set<string>();
@@ -522,12 +565,25 @@
 		}
 	};
 
-	const toChatMessage = (item: DmMessageResponse | ChannelMessageResponse): ChatMessage => ({
-		id: item.id,
-		userId: item.user_id,
-		content: item.content,
-		createdAt: item.created_at
-	});
+	const toChatMessage = async (item: DmMessageResponse | ChannelMessageResponse): Promise<ChatMessage> => {
+		const base: ChatMessage = {
+			id: item.id,
+			userId: item.user_id,
+			content: item.content,
+			createdAt: item.created_at
+		};
+
+		if ('channel_id' in item) {
+			const authorAvatarUrl = await getOrLoadMessageAuthorAvatarUrl(item.user_id);
+			return {
+				...base,
+				authorName: item.username ?? undefined,
+				authorAvatarUrl
+			};
+		}
+
+		return base;
+	};
 
 	const byCreatedAtAsc = (a: ChatMessage, b: ChatMessage) => a.createdAt - b.createdAt;
 
@@ -580,10 +636,10 @@
 
 			if (activeChat === 'friend' && activeDmThreadId) {
 				const data = await apiClient.dmMessages(token, activeDmThreadId);
-				nextMessages = data.map(toChatMessage).sort(byCreatedAtAsc);
+				nextMessages = (await Promise.all(data.map(toChatMessage))).sort(byCreatedAtAsc);
 			} else if (activeChat === 'server' && selectedChannel?.id) {
 				const data = await apiClient.channelMessages(token, selectedChannel.id);
-				nextMessages = data.map(toChatMessage).sort(byCreatedAtAsc);
+				nextMessages = (await Promise.all(data.map(toChatMessage))).sort(byCreatedAtAsc);
 			}
 
 			chatMessages = nextMessages ?? [];
@@ -677,20 +733,24 @@
 		try {
 			if (activeChat === 'friend' && activeDmThreadId) {
 				const sent = await apiClient.dmSendMessage(token, activeDmThreadId, content);
-				chatMessages = [...chatMessages, toChatMessage(sent)].sort(byCreatedAtAsc);
+				const mapped = await toChatMessage(sent);
+				chatMessages = [...chatMessages, mapped].sort(byCreatedAtAsc);
 				const friendId = friendByDmThreadId[activeDmThreadId];
 				if (friendId) {
 					setFriendLastMessage(friendId, sent.content);
 					clearFriendUnread(friendId);
 				}
 				chatInput = '';
+				chatEmojiPickerOpen = false;
 				return;
 			}
 
 			if (activeChat === 'server' && selectedChannel?.id) {
 				const sent = await apiClient.channelSendMessage(token, selectedChannel.id, content);
-				chatMessages = [...chatMessages, toChatMessage(sent)].sort(byCreatedAtAsc);
+				const mapped = await toChatMessage(sent);
+				chatMessages = [...chatMessages, mapped].sort(byCreatedAtAsc);
 				chatInput = '';
+				chatEmojiPickerOpen = false;
 				return;
 			}
 
@@ -776,6 +836,7 @@
 		selectFriend(friend);
 		selectedChannel = null;
 		chatInput = '';
+		chatEmojiPickerOpen = false;
 		chatMessages = [];
 		chatError = null;
 		activeChat = 'friend';
@@ -809,6 +870,7 @@
 		chatMessages = [];
 		chatError = null;
 		chatInput = '';
+		chatEmojiPickerOpen = false;
 
 		try {
 			await loadServerChannels(server.id);
@@ -827,6 +889,7 @@
 		channelSettingsMenuOpen = false;
 		activeDmThreadId = null;
 		chatInput = '';
+		chatEmojiPickerOpen = false;
 		chatMessages = [];
 		chatError = null;
 		activeChat = 'server';
@@ -842,6 +905,7 @@
 		chatMessages = [];
 		chatError = null;
 		chatInput = '';
+		chatEmojiPickerOpen = false;
 	};
 
 	const handleChatBack = () => {
@@ -852,6 +916,7 @@
 			chatMessages = [];
 			chatError = null;
 			chatInput = '';
+			chatEmojiPickerOpen = false;
 			return;
 		}
 
@@ -1110,6 +1175,14 @@
 		if (detail?.unicode) {
 			createChannelEmoji = detail.unicode;
 			createChannelEmojiPickerOpen = false;
+		}
+	};
+
+	const handleChatEmojiPicked = (event: Event) => {
+		const detail = (event as CustomEvent<{ unicode?: string }>).detail;
+		if (detail?.unicode) {
+			chatInput = `${chatInput}${detail.unicode}`;
+			chatEmojiPickerOpen = false;
 		}
 	};
 
@@ -1568,6 +1641,7 @@
 		chatMessages = [];
 		chatInput = '';
 		chatError = null;
+		chatEmojiPickerOpen = false;
 		dmThreadByFriendId = {};
 		friendByDmThreadId = {};
 		onlineUserIdsSnapshot = [];
@@ -1609,6 +1683,7 @@
 		channelUnreadByServer = {};
 		leaveServerLoading = false;
 		leaveServerError = null;
+		clearMessageAuthorAvatarCache();
 		createChannelName = '';
 		createChannelEmoji = '💬';
 		createChannelError = null;
@@ -1808,6 +1883,15 @@
 			}
 
 			if (
+				chatEmojiPickerOpen &&
+				target &&
+				(!chatEmojiPickerEl || !chatEmojiPickerEl.contains(target)) &&
+				(!chatEmojiToggleButtonEl || !chatEmojiToggleButtonEl.contains(target))
+			) {
+				chatEmojiPickerOpen = false;
+			}
+
+			if (
 				!ignoreModalOutsideClose &&
 				createServerModalOpen &&
 				createServerModalEl &&
@@ -1841,6 +1925,7 @@
 		if (!token) {
 			lastLoadedToken = null;
 			setCurrentUserAvatarUrl(null);
+			clearMessageAuthorAvatarCache();
 			return;
 		}
 
@@ -1974,15 +2059,15 @@
 						<div class="alert alert-success py-2 text-sm mb-3"><span>{profileUploadMessage}</span></div>
 					{/if}
 
-					<div class="tabs tabs-boxed bg-slate-800/60 border border-slate-700/70 mb-3 w-full p-1">
+					<div class="tabs tabs-boxed rounded-lg bg-slate-800/60 border border-slate-700/70 mb-3 w-full p-1">
 						<button
-							class={`tab flex-1 text-base transition-colors ${$selectedTab === 'friends' ? 'bg-sky-800/85 text-sky-100 font-extrabold border border-sky-400/45 shadow shadow-sky-950/40' : 'text-slate-300/90 font-semibold hover:bg-slate-700/70'}`}
+							class={`tab rounded-md flex-1 text-base transition-colors ${$selectedTab === 'friends' ? 'bg-primary/40 text-primary-content font-extrabold border border-primary/50 shadow' : 'text-slate-300/90 font-semibold hover:bg-slate-700/70'}`}
 							onclick={() => { $selectedTab = 'friends'; }}
 						>
 							Friends
 						</button>
 						<button
-							class={`tab flex-1 text-base transition-colors ${$selectedTab === 'servers' ? 'bg-sky-800/85 text-sky-100 font-extrabold border border-sky-400/45 shadow shadow-sky-950/40' : 'text-slate-300/90 font-semibold hover:bg-slate-700/70'}`}
+							class={`tab rounded-md flex-1 text-base transition-colors ${$selectedTab === 'servers' ? 'bg-primary/40 text-primary-content font-extrabold border border-primary/50 shadow' : 'text-slate-300/90 font-semibold hover:bg-slate-700/70'}`}
 							onclick={() => { $selectedTab = 'servers'; }}
 						>
 							Servers
@@ -2162,10 +2247,10 @@
 				<div class="flex-1 overflow-auto p-3">
 					{#if $selectedServer}
 						{#if (serverChannels[$selectedServer.id] ?? []).length > 0}
-							<ul class="menu rounded-box bg-slate-800/40 w-full">
+							<ul class="menu rounded-box bg-slate-800/40 w-full space-y-1">
 								{#each serverChannels[$selectedServer.id] ?? [] as channel}
-									<li>
-										<button type="button" onclick={() => openServerChannelChat(channel)}>
+									<li class="rounded-md border border-slate-700/55 bg-slate-800/40">
+										<button class="min-h-11 px-3 text-base" type="button" onclick={() => openServerChannelChat(channel)}>
 											<span>{channel.emoji} {channel.name}</span>
 											{#if getChannelUnread($selectedServer.id, channel.id) > 0}
 												<span class="badge badge-secondary ml-auto">{getChannelUnread($selectedServer.id, channel.id)}</span>
@@ -2248,6 +2333,22 @@
 						{:else}
 							{#each chatMessages as msg, idx}
 								<div class={`chat ${msg.userId === $session.userId ? 'chat-end' : 'chat-start'}`} data-msg-index={idx}>
+									{#if activeChat === 'server'}
+										<div class={`chat-image avatar ${msg.userId === $session.userId ? 'order-2' : ''}`}>
+											<div class="w-8 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
+												{#if msg.authorAvatarUrl}
+													<img src={msg.authorAvatarUrl} alt={`${msg.authorName ?? 'User'} avatar`} class="h-full w-full object-cover" />
+												{:else}
+													<span class="text-[10px] font-semibold">{(msg.authorName ?? 'U').slice(0, 1).toUpperCase()}</span>
+												{/if}
+											</div>
+										</div>
+									{/if}
+									{#if activeChat === 'server'}
+										<div class="chat-header text-[11px] text-slate-300 mb-1">
+											{msg.userId === $session.userId ? ($session.username ?? msg.authorName ?? 'You') : (msg.authorName ?? 'Unknown user')}
+										</div>
+									{/if}
 									<div
 										class={`chat-bubble whitespace-pre-wrap break-words ${msg.userId === $session.userId ? 'chat-bubble-primary' : 'bg-slate-700 text-slate-100'}`}
 									>
@@ -2265,21 +2366,40 @@
 						{#if chatError}
 							<div class="alert alert-error py-2 text-sm mb-2"><span>{chatError}</span></div>
 						{/if}
-						<div class="join w-full">
-							<input
-								class="input input-bordered join-item flex-1"
-								placeholder="Type a message..."
-								bind:value={chatInput}
-								onkeydown={(event) => {
-									if (event.key === 'Enter' && !event.shiftKey) {
-										event.preventDefault();
-										void handleSendChatMessage();
-									}
-								}}
-							/>
-							<button class="btn join-item btn-primary" onclick={handleSendChatMessage} disabled={chatSending}>
-								{chatSending ? 'Sending...' : 'Send'}
-							</button>
+						<div class="w-full space-y-2">
+							{#if (activeChat === 'friend' || activeChat === 'server') && chatEmojiPickerOpen}
+								<div class="flex justify-center" bind:this={chatEmojiPickerEl}>
+									<div class="w-full max-w-md rounded-md border border-slate-700 overflow-hidden bg-slate-950">
+										<emoji-picker style="width:100%;" onemoji-click={handleChatEmojiPicked}></emoji-picker>
+									</div>
+								</div>
+							{/if}
+							<div class="join w-full">
+								<button
+									bind:this={chatEmojiToggleButtonEl}
+									class="btn join-item btn-ghost"
+									type="button"
+									onclick={() => {
+										chatEmojiPickerOpen = !chatEmojiPickerOpen;
+									}}
+								>
+									😊
+								</button>
+								<input
+									class="input input-bordered join-item flex-1"
+									placeholder="Type a message..."
+									bind:value={chatInput}
+									onkeydown={(event) => {
+										if (event.key === 'Enter' && !event.shiftKey) {
+											event.preventDefault();
+											void handleSendChatMessage();
+										}
+									}}
+								/>
+								<button class="btn join-item btn-primary" onclick={handleSendChatMessage} disabled={chatSending}>
+									{chatSending ? 'Sending...' : 'Send'}
+								</button>
+							</div>
 						</div>
 					</div>
 				</section>
@@ -2605,8 +2725,10 @@
 						</label>
 
 						{#if createChannelEmojiPickerOpen}
-							<div class="rounded-md border border-slate-700 overflow-hidden bg-slate-950">
-								<emoji-picker onemoji-click={handleCreateChannelEmojiPicked}></emoji-picker>
+							<div class="channel-emoji-picker flex justify-center">
+								<div class="w-full rounded-md border border-slate-700 overflow-hidden bg-slate-950">
+									<emoji-picker style="width:100%;" onemoji-click={handleCreateChannelEmojiPicked}></emoji-picker>
+								</div>
 							</div>
 						{/if}
 
@@ -2671,8 +2793,10 @@
 						</button>
 
 						{#if updateChannelEmojiPickerOpen}
-							<div class="rounded-md border border-slate-700 overflow-hidden bg-slate-950">
-								<emoji-picker onemoji-click={handleUpdateChannelEmojiPicked}></emoji-picker>
+							<div class="channel-emoji-picker flex justify-center">
+								<div class="w-full rounded-md border border-slate-700 overflow-hidden bg-slate-950">
+									<emoji-picker style="width:100%;" onemoji-click={handleUpdateChannelEmojiPicked}></emoji-picker>
+								</div>
 							</div>
 						{/if}
 

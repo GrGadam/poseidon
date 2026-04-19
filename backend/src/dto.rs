@@ -109,6 +109,8 @@ pub struct MessageDto {
     pub id: String,
     pub channel_id: String,
     pub user_id: String,
+    pub username: Option<String>,
+    pub avatar_mime: Option<String>,
     pub content: String,
     pub created_at: i64,
 }

@@ -67,6 +67,14 @@ pub async fn send_message(
         .ok_or(AppError::NotFound)?;
     let server_id: String = channel.get("server_id");
 
+    let sender = sqlx::query("SELECT username, avatar_mime FROM users WHERE id = ?")
+        .bind(&user.user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let sender_username: String = sender.get("username");
+    let sender_avatar_mime: Option<String> = sender.try_get("avatar_mime").ok();
+
     let id = Uuid::new_v4().to_string();
     let now = OffsetDateTime::now_utc().unix_timestamp();
 
@@ -91,6 +99,8 @@ pub async fn send_message(
         id,
         channel_id,
         user_id: user.user_id,
+        username: Some(sender_username),
+        avatar_mime: sender_avatar_mime,
         content: payload.content,
         created_at: now,
     }))
@@ -111,10 +121,12 @@ pub async fn list_messages(
     assert_channel_membership(&state, &user.user_id, &channel_id).await?;
 
     let rows = sqlx::query(
-        "SELECT id, channel_id, user_id, content, created_at
-         FROM channel_messages
-         WHERE channel_id = ?
-         ORDER BY created_at DESC
+        "SELECT m.id, m.channel_id, m.user_id, m.content, m.created_at,
+                u.username, u.avatar_mime
+         FROM channel_messages m
+         JOIN users u ON u.id = m.user_id
+         WHERE m.channel_id = ?
+         ORDER BY m.created_at DESC
          LIMIT 100",
     )
     .bind(&channel_id)
@@ -127,6 +139,8 @@ pub async fn list_messages(
             id: r.get("id"),
             channel_id: r.get("channel_id"),
             user_id: r.get("user_id"),
+            username: r.try_get("username").ok(),
+            avatar_mime: r.try_get("avatar_mime").ok(),
             content: r.get("content"),
             created_at: r.get("created_at"),
         })
