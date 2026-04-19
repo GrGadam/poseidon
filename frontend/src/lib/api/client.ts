@@ -47,6 +47,25 @@ export type ServerResponse = {
 	member_role?: 'owner' | 'moderator' | 'user' | null;
 };
 
+export type InvitableFriendResponse = {
+	id: string;
+	username: string;
+	avatar_mime?: string | null;
+	created_at: number;
+};
+
+export type ServerInviteResponse = {
+	id: string;
+	server: ServerResponse;
+	from_user: {
+		id: string;
+		username: string;
+		avatar_mime?: string | null;
+		created_at: number;
+	};
+	created_at: number;
+};
+
 async function request<T>(
 	path: string,
 	method: string,
@@ -121,6 +140,16 @@ export const apiClient = {
 	},
 	joinPublicServer: (accessToken: string, serverId: string) =>
 		request(`/servers/${encodeURIComponent(serverId)}/join`, 'POST', undefined, accessToken),
+	serverInvitableFriends: (accessToken: string, serverId: string) =>
+		request<InvitableFriendResponse[]>(`/servers/${encodeURIComponent(serverId)}/invitable-friends`, 'GET', undefined, accessToken),
+	inviteUserToServer: (accessToken: string, serverId: string, userId: string) =>
+		request(`/servers/${encodeURIComponent(serverId)}/invites/users`, 'POST', { user_id: userId }, accessToken),
+	pendingServerInvites: (accessToken: string) =>
+		request<ServerInviteResponse[]>('/servers/invites/pending', 'GET', undefined, accessToken),
+	acceptServerInvite: (accessToken: string, inviteId: string) =>
+		request(`/servers/invites/${encodeURIComponent(inviteId)}/accept`, 'POST', undefined, accessToken),
+	rejectServerInvite: (accessToken: string, inviteId: string) =>
+		request(`/servers/invites/${encodeURIComponent(inviteId)}`, 'DELETE', undefined, accessToken),
 	leaveServer: (accessToken: string, serverId: string) =>
 		request(`/servers/${encodeURIComponent(serverId)}/leave`, 'POST', undefined, accessToken),
 	serverChannels: (accessToken: string, serverId: string) =>

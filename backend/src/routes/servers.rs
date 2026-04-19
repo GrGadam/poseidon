@@ -15,8 +15,9 @@ use uuid::Uuid;
 use crate::{
     auth::AuthUser,
     dto::{
-        ChannelDto, CreateChannelRequest, CreateServerRequest, OkResponse, ServerDto,
-        UpdateChannelRequest, UpdateServerRequest,
+        ChannelDto, CreateChannelRequest, CreateServerRequest, CreateServerUserInviteRequest,
+        OkResponse, ServerDto, ServerUserInviteDto, UpdateChannelRequest, UpdateServerRequest,
+        UserDto,
     },
     error::AppError,
     state::AppState,
@@ -41,6 +42,14 @@ pub struct RoleUpdateRequest {
 
 fn is_moderator_or_owner(role: &str) -> bool {
     role == "owner" || role == "moderator"
+}
+
+fn sort_pair(a: &str, b: &str) -> (String, String) {
+    if a < b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    }
 }
 
 async fn get_role(state: &AppState, user_id: &str, server_id: &str) -> Result<String, AppError> {
@@ -403,6 +412,310 @@ pub async fn join_by_invite(
         &state,
         "server.joined",
         serde_json::json!({"server_id": server_id, "user_id": user.user_id}),
+    );
+
+    Ok(Json(OkResponse { ok: true }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/servers/{server_id}/invitable-friends",
+    responses((status = 200, body = Vec<UserDto>)),
+    params(("server_id" = String, Path, description = "Server id")),
+    security(("bearer_auth" = []))
+)]
+pub async fn list_invitable_friends(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(server_id): Path<String>,
+) -> Result<Json<Vec<UserDto>>, AppError> {
+    let role = get_role(&state, &user.user_id, &server_id).await?;
+    if !is_moderator_or_owner(&role) {
+        return Err(AppError::Forbidden);
+    }
+
+    let server = sqlx::query("SELECT is_public FROM servers WHERE id = ?")
+        .bind(&server_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let is_public: bool = server.get("is_public");
+    if is_public {
+        return Err(AppError::BadRequest("server must be private".to_string()));
+    }
+
+    let rows = sqlx::query(
+        "SELECT u.id, u.username, u.avatar_mime, u.created_at
+         FROM friendships f
+         JOIN users u ON u.id = CASE WHEN f.user_a = ? THEN f.user_b ELSE f.user_a END
+         WHERE (f.user_a = ? OR f.user_b = ?)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM server_members sm
+               WHERE sm.server_id = ? AND sm.user_id = u.id
+           )
+           AND NOT EXISTS (
+               SELECT 1
+               FROM server_user_invites sui
+               WHERE sui.server_id = ? AND sui.to_user_id = u.id
+           )
+         ORDER BY u.username COLLATE NOCASE ASC",
+    )
+    .bind(&user.user_id)
+    .bind(&user.user_id)
+    .bind(&user.user_id)
+    .bind(&server_id)
+    .bind(&server_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let data = rows
+        .into_iter()
+        .map(|r| UserDto {
+            id: r.get("id"),
+            username: r.get("username"),
+            avatar_mime: r.try_get("avatar_mime").ok(),
+            created_at: r.get("created_at"),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(data))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/servers/{server_id}/invites/users",
+    request_body = CreateServerUserInviteRequest,
+    responses((status = 200, body = OkResponse)),
+    params(("server_id" = String, Path, description = "Server id")),
+    security(("bearer_auth" = []))
+)]
+pub async fn invite_user_to_private_server(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(server_id): Path<String>,
+    Json(payload): Json<CreateServerUserInviteRequest>,
+) -> Result<Json<OkResponse>, AppError> {
+    let role = get_role(&state, &user.user_id, &server_id).await?;
+    if !is_moderator_or_owner(&role) {
+        return Err(AppError::Forbidden);
+    }
+
+    let server = sqlx::query("SELECT is_public FROM servers WHERE id = ?")
+        .bind(&server_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let is_public: bool = server.get("is_public");
+    if is_public {
+        return Err(AppError::BadRequest("server must be private".to_string()));
+    }
+
+    if payload.user_id == user.user_id {
+        return Err(AppError::BadRequest("cannot invite yourself".to_string()));
+    }
+
+    let target_exists = sqlx::query("SELECT 1 FROM users WHERE id = ?")
+        .bind(&payload.user_id)
+        .fetch_optional(&state.db)
+        .await?;
+    if target_exists.is_none() {
+        return Err(AppError::NotFound);
+    }
+
+    let (a, b) = sort_pair(&user.user_id, &payload.user_id);
+    let friendship_exists = sqlx::query("SELECT 1 FROM friendships WHERE user_a = ? AND user_b = ?")
+        .bind(&a)
+        .bind(&b)
+        .fetch_optional(&state.db)
+        .await?;
+    if friendship_exists.is_none() {
+        return Err(AppError::Forbidden);
+    }
+
+    let already_member = sqlx::query("SELECT 1 FROM server_members WHERE server_id = ? AND user_id = ?")
+        .bind(&server_id)
+        .bind(&payload.user_id)
+        .fetch_optional(&state.db)
+        .await?;
+    if already_member.is_some() {
+        return Err(AppError::Conflict("user is already a member".to_string()));
+    }
+
+    let invite_id = Uuid::new_v4().to_string();
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let inserted = sqlx::query(
+        "INSERT INTO server_user_invites(id, server_id, from_user_id, to_user_id, created_at) VALUES(?, ?, ?, ?, ?)",
+    )
+    .bind(&invite_id)
+    .bind(&server_id)
+    .bind(&user.user_id)
+    .bind(&payload.user_id)
+    .bind(now)
+    .execute(&state.db)
+    .await;
+
+    if inserted.is_err() {
+        return Err(AppError::Conflict("invite already exists".to_string()));
+    }
+
+    ws::emit(
+        &state,
+        "server.invite.created",
+        serde_json::json!({
+            "invite_id": invite_id,
+            "server_id": server_id,
+            "from_user_id": user.user_id,
+            "to_user_id": payload.user_id
+        }),
+    );
+
+    Ok(Json(OkResponse { ok: true }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/servers/invites/pending",
+    responses((status = 200, body = Vec<ServerUserInviteDto>)),
+    security(("bearer_auth" = []))
+)]
+pub async fn list_pending_server_invites(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Vec<ServerUserInviteDto>>, AppError> {
+    let rows = sqlx::query(
+        "SELECT sui.id as invite_id, sui.created_at as invite_created,
+                s.id as server_id, s.name as server_name, s.description as server_description,
+                s.owner_id as server_owner_id, s.is_public as server_is_public, s.created_at as server_created,
+                uf.id as from_id, uf.username as from_username, uf.avatar_mime as from_avatar, uf.created_at as from_created
+         FROM server_user_invites sui
+         JOIN servers s ON s.id = sui.server_id
+         JOIN users uf ON uf.id = sui.from_user_id
+         WHERE sui.to_user_id = ?
+         ORDER BY sui.created_at DESC",
+    )
+    .bind(&user.user_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let data = rows
+        .into_iter()
+        .map(|r| ServerUserInviteDto {
+            id: r.get("invite_id"),
+            server: ServerDto {
+                id: r.get("server_id"),
+                name: r.get("server_name"),
+                description: r.try_get("server_description").ok(),
+                owner_id: r.get("server_owner_id"),
+                is_public: r.get("server_is_public"),
+                created_at: r.get("server_created"),
+                member_count: None,
+                member_role: None,
+            },
+            from_user: UserDto {
+                id: r.get("from_id"),
+                username: r.get("from_username"),
+                avatar_mime: r.try_get("from_avatar").ok(),
+                created_at: r.get("from_created"),
+            },
+            created_at: r.get("invite_created"),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(data))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/servers/invites/{invite_id}/accept",
+    responses((status = 200, body = OkResponse)),
+    params(("invite_id" = String, Path, description = "Server invite id")),
+    security(("bearer_auth" = []))
+)]
+pub async fn accept_server_invite(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(invite_id): Path<String>,
+) -> Result<Json<OkResponse>, AppError> {
+    let row = sqlx::query(
+        "SELECT server_id, to_user_id
+         FROM server_user_invites
+         WHERE id = ?",
+    )
+    .bind(&invite_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let server_id: String = row.get("server_id");
+    let to_user_id: String = row.get("to_user_id");
+    if to_user_id != user.user_id {
+        return Err(AppError::Forbidden);
+    }
+
+    sqlx::query("INSERT OR IGNORE INTO server_members(server_id, user_id, role, joined_at) VALUES(?, ?, 'user', ?)")
+        .bind(&server_id)
+        .bind(&user.user_id)
+        .bind(OffsetDateTime::now_utc().unix_timestamp())
+        .execute(&state.db)
+        .await?;
+
+    sqlx::query("DELETE FROM server_user_invites WHERE id = ?")
+        .bind(&invite_id)
+        .execute(&state.db)
+        .await?;
+
+    ws::emit(
+        &state,
+        "server.invite.accepted",
+        serde_json::json!({"invite_id": invite_id, "server_id": server_id, "user_id": user.user_id}),
+    );
+    ws::emit(
+        &state,
+        "server.joined",
+        serde_json::json!({"server_id": server_id, "user_id": user.user_id}),
+    );
+
+    Ok(Json(OkResponse { ok: true }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/servers/invites/{invite_id}",
+    responses((status = 200, body = OkResponse)),
+    params(("invite_id" = String, Path, description = "Server invite id")),
+    security(("bearer_auth" = []))
+)]
+pub async fn reject_server_invite(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(invite_id): Path<String>,
+) -> Result<Json<OkResponse>, AppError> {
+    let row = sqlx::query(
+        "SELECT server_id, to_user_id
+         FROM server_user_invites
+         WHERE id = ?",
+    )
+    .bind(&invite_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let server_id: String = row.get("server_id");
+    let to_user_id: String = row.get("to_user_id");
+    if to_user_id != user.user_id {
+        return Err(AppError::Forbidden);
+    }
+
+    sqlx::query("DELETE FROM server_user_invites WHERE id = ?")
+        .bind(&invite_id)
+        .execute(&state.db)
+        .await?;
+
+    ws::emit(
+        &state,
+        "server.invite.rejected",
+        serde_json::json!({"invite_id": invite_id, "server_id": server_id, "user_id": user.user_id}),
     );
 
     Ok(Json(OkResponse { ok: true }))

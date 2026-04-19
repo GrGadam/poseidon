@@ -14,6 +14,7 @@ export type ServerEntry = {
 	id: string;
 	name: string;
 	description: string;
+	isPublic?: boolean;
 	avatarMime?: string | null;
 	avatarUrl?: string | null;
 	hasUnread: boolean;

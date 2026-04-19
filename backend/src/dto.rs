@@ -66,6 +66,19 @@ pub struct UpdateServerRequest {
     pub is_public: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateServerUserInviteRequest {
+    pub user_id: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ServerUserInviteDto {
+    pub id: String,
+    pub server: ServerDto,
+    pub from_user: UserDto,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServerDto {
     pub id: String,

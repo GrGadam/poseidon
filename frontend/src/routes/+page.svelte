@@ -6,6 +6,8 @@
 		ChannelResponse,
 		DmMessageResponse,
 		DmThreadResponse,
+		InvitableFriendResponse,
+		ServerInviteResponse,
 		ServerResponse
 	} from '$lib/api/client';
 	import { apiClient, apiConfig } from '$lib/api/client';
@@ -41,6 +43,7 @@
 	let authError = $state<string | null>(null);
 	let addFriendModalOpen = $state(false);
 	let pendingModalOpen = $state(false);
+	let serverInviteModalOpen = $state(false);
 	let createServerModalOpen = $state(false);
 	let joinServerModalOpen = $state(false);
 	let publicServersLoading = $state(false);
@@ -109,13 +112,34 @@
 	let deleteServerConfirmText = $state('');
 	let pendingActionError = $state<string | null>(null);
 	let pendingActionInProgressId = $state<string | null>(null);
+	let serverInvites = $state<
+		Array<{
+			inviteId: string;
+			serverId: string;
+			serverName: string;
+			serverDescription: string;
+			serverAvatarUrl: string | null;
+			fromUserName: string;
+			fromUserAvatarUrl: string | null;
+			createdAt: number;
+		}>
+	>([]);
+	let serverInviteActionError = $state<string | null>(null);
+	let serverInviteActionInProgressId = $state<string | null>(null);
+	let inviteUserModalOpen = $state(false);
+	let inviteUserSearch = $state('');
+	let inviteUserLoading = $state(false);
+	let inviteUserError = $state<string | null>(null);
+	let inviteUserMessage = $state<string | null>(null);
+	let inviteUserInProgressId = $state<string | null>(null);
+	let invitableFriends = $state<Array<{ id: string; username: string; avatarUrl: string | null }>>([]);
 	let lastLoadedToken = $state<string | null>(null);
 	let profileUploadMessage = $state<string | null>(null);
 	let profileUploadError = $state<string | null>(null);
 	let currentUserAvatarUrl = $state<string | null>(null);
 	let serverAvatarUploadMessage = $state<string | null>(null);
 	let serverAvatarUploadError = $state<string | null>(null);
-	let serverAvatarMessageTimeout = $state<ReturnType<typeof setTimeout> | null>(null);
+	const transientTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 	let passwordModalOpen = $state(false);
 	let currentPasswordInput = $state('');
 	let newPasswordInput = $state('');
@@ -164,6 +188,23 @@
 	let messageAuthorAvatarUrls = $state<Record<string, string | null>>({});
 	let messageActionsOpenForId = $state<string | null>(null);
 	let editingMessageId = $state<string | null>(null);
+
+	const clearTransientTimeout = (key: string) => {
+		const existing = transientTimeouts.get(key);
+		if (existing) {
+			clearTimeout(existing);
+			transientTimeouts.delete(key);
+		}
+	};
+
+	const scheduleTransientClear = (key: string, clearFn: () => void, ms = 5000) => {
+		clearTransientTimeout(key);
+		const timeout = setTimeout(() => {
+			clearFn();
+			transientTimeouts.delete(key);
+		}, ms);
+		transientTimeouts.set(key, timeout);
+	};
 
 	const loadUserAvatarUrl = async (accessToken: string, userId: string): Promise<string | null> => {
 		const res = await fetch(`${apiConfig.baseUrl}/users/${encodeURIComponent(userId)}/avatar`, {
@@ -358,6 +399,83 @@
 		}
 	};
 
+	const clearServerInviteAvatars = () => {
+		for (const invite of serverInvites) {
+			if (invite.serverAvatarUrl?.startsWith('blob:')) {
+				URL.revokeObjectURL(invite.serverAvatarUrl);
+			}
+			if (invite.fromUserAvatarUrl?.startsWith('blob:')) {
+				URL.revokeObjectURL(invite.fromUserAvatarUrl);
+			}
+		}
+	};
+
+	const clearInvitableFriendsAvatars = () => {
+		for (const item of invitableFriends) {
+			if (item.avatarUrl?.startsWith('blob:')) {
+				URL.revokeObjectURL(item.avatarUrl);
+			}
+		}
+	};
+
+	const refreshServerInvites = async () => {
+		const token = $session.accessToken;
+		if (!token) {
+			clearServerInviteAvatars();
+			serverInvites = [];
+			return;
+		}
+
+		const data = await apiClient.pendingServerInvites(token);
+		clearServerInviteAvatars();
+
+		const nextInvites = await Promise.all(
+			data.map(async (item: ServerInviteResponse) => {
+				const serverAvatarUrl = await loadServerAvatarUrl(token, item.server.id);
+				const fromUserAvatarUrl = await loadUserAvatarUrl(token, item.from_user.id);
+				return {
+					inviteId: item.id,
+					serverId: item.server.id,
+					serverName: item.server.name,
+					serverDescription: item.server.description ?? '',
+					serverAvatarUrl,
+					fromUserName: item.from_user.username,
+					fromUserAvatarUrl,
+					createdAt: item.created_at
+				};
+			})
+		);
+
+		serverInvites = nextInvites;
+	};
+
+	const loadInvitableFriends = async () => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId) {
+			return;
+		}
+
+		inviteUserLoading = true;
+		inviteUserError = null;
+
+		try {
+			const data = await apiClient.serverInvitableFriends(token, serverId);
+			clearInvitableFriendsAvatars();
+			invitableFriends = await Promise.all(
+				data.map(async (entry: InvitableFriendResponse) => ({
+					id: entry.id,
+					username: entry.username,
+					avatarUrl: await loadUserAvatarUrl(token, entry.id)
+				}))
+			);
+		} catch (error) {
+			inviteUserError = error instanceof Error ? error.message : 'Failed to load friends for invite.';
+		} finally {
+			inviteUserLoading = false;
+		}
+	};
+
 	const refreshFriendsData = async () => {
 		const token = $session.accessToken;
 		if (!token) {
@@ -416,6 +534,7 @@
 					id: item.id,
 					name: item.name,
 					description: item.description ?? '',
+					isPublic: item.is_public,
 					avatarUrl,
 					hasUnread,
 					createdAt: item.created_at,
@@ -512,6 +631,15 @@
 
 	const canLeaveSelectedServer = () => selectedServerRole() === 'user';
 
+	const filteredInvitableFriends = () => {
+		const needle = inviteUserSearch.trim().toLowerCase();
+		if (!needle) {
+			return invitableFriends;
+		}
+
+		return invitableFriends.filter((entry) => entry.username.toLowerCase().includes(needle));
+	};
+
 	const loadPublicServers = async () => {
 		const token = $session.accessToken;
 		if (!token || !joinServerModalOpen) {
@@ -553,6 +681,7 @@
 						id: item.id,
 						name: item.name,
 						description: item.description ?? '',
+						isPublic: item.is_public,
 						avatarUrl,
 						hasUnread: false,
 						createdAt: item.created_at,
@@ -882,6 +1011,9 @@
 		const name = addFriendUsername.trim();
 		if (!name) {
 			addFriendError = 'Enter a username.';
+			scheduleTransientClear('addFriendError', () => {
+				addFriendError = null;
+			});
 			return;
 		}
 
@@ -889,21 +1021,36 @@
 			await sendFriendRequest(token, name);
 			addFriendUsername = '';
 			addFriendMessage = 'Friend request sent.';
+			scheduleTransientClear('addFriendMessage', () => {
+				addFriendMessage = null;
+			});
 		} catch (error) {
 			if (error instanceof Error) {
 				if (error.message === 'not_found') {
 					addFriendError = 'User not found.';
+					scheduleTransientClear('addFriendError', () => {
+						addFriendError = null;
+					});
 					return;
 				}
 				if (error.message.includes('already exists') || error.message.includes('request already exists')) {
 					addFriendError = 'A pending request already exists for this user.';
+					scheduleTransientClear('addFriendError', () => {
+						addFriendError = null;
+					});
 					return;
 				}
 				addFriendError = error.message;
+				scheduleTransientClear('addFriendError', () => {
+					addFriendError = null;
+				});
 				return;
 			}
 
 			addFriendError = 'Failed to send friend request.';
+			scheduleTransientClear('addFriendError', () => {
+				addFriendError = null;
+			});
 		}
 	};
 
@@ -930,6 +1077,94 @@
 			pendingActionError = error instanceof Error ? error.message : 'Failed to process request.';
 		} finally {
 			pendingActionInProgressId = null;
+		}
+	};
+
+	const handleServerInviteDecision = async (inviteId: string, action: 'accept' | 'reject') => {
+		const token = $session.accessToken;
+		if (!token) {
+			return;
+		}
+
+		serverInviteActionInProgressId = inviteId;
+		serverInviteActionError = null;
+
+		try {
+			if (action === 'accept') {
+				await apiClient.acceptServerInvite(token, inviteId);
+			} else {
+				await apiClient.rejectServerInvite(token, inviteId);
+			}
+
+			await Promise.all([refreshServerInvites(), refreshServersData()]);
+
+			if (serverInvites.length === 0) {
+				serverInviteModalOpen = false;
+			}
+		} catch (error) {
+			serverInviteActionError = error instanceof Error ? error.message : 'Failed to process server invite.';
+			scheduleTransientClear('serverInviteActionError', () => {
+				serverInviteActionError = null;
+			});
+		} finally {
+			serverInviteActionInProgressId = null;
+		}
+	};
+
+	const openServerInviteModal = () => {
+		serverInviteModalOpen = true;
+		serverInviteActionError = null;
+	};
+
+	const openInviteUserModal = async () => {
+		if (!canManageSelectedServer() || $selectedServer?.isPublic !== false) {
+			return;
+		}
+
+		inviteUserModalOpen = true;
+		inviteUserSearch = '';
+		inviteUserError = null;
+		inviteUserMessage = null;
+		await loadInvitableFriends();
+	};
+
+	const closeInviteUserModal = () => {
+		inviteUserModalOpen = false;
+		inviteUserSearch = '';
+		inviteUserError = null;
+		inviteUserMessage = null;
+		inviteUserInProgressId = null;
+		clearInvitableFriendsAvatars();
+		invitableFriends = [];
+	};
+
+	const handleInviteUserToSelectedServer = async (userId: string, username: string) => {
+		const token = $session.accessToken;
+		const serverId = $selectedServer?.id;
+		if (!token || !serverId) {
+			return;
+		}
+
+		inviteUserInProgressId = userId;
+		inviteUserError = null;
+		inviteUserMessage = null;
+
+		try {
+			await apiClient.inviteUserToServer(token, serverId, userId);
+			inviteUserMessage = `${username} invited.`;
+			scheduleTransientClear('inviteUserMessage', () => {
+				inviteUserMessage = null;
+			});
+			clearInvitableFriendsAvatars();
+			invitableFriends = invitableFriends.filter((item) => item.id !== userId);
+			await refreshServerInvites();
+		} catch (error) {
+			inviteUserError = error instanceof Error ? error.message : 'Failed to send invite.';
+			scheduleTransientClear('inviteUserError', () => {
+				inviteUserError = null;
+			});
+		} finally {
+			inviteUserInProgressId = null;
 		}
 	};
 
@@ -1146,10 +1381,16 @@
 			await refreshServersData();
 			await loadPublicServers();
 			joinServerMessage = `Joined ${server.name}.`;
+			scheduleTransientClear('joinServerMessage', () => {
+				joinServerMessage = null;
+			});
 			joinServerConfirmModalOpen = false;
 			joinServerTarget = null;
 		} catch (error) {
 			publicServersError = error instanceof Error ? error.message : 'Failed to join server.';
+			scheduleTransientClear('publicServersError', () => {
+				publicServersError = null;
+			});
 		} finally {
 			joinServerLoading = false;
 		}
@@ -1184,11 +1425,17 @@
 
 		if (!name) {
 			createServerError = 'Server name is required.';
+			scheduleTransientClear('createServerError', () => {
+				createServerError = null;
+			});
 			return;
 		}
 
 		if (name.length > 64) {
 			createServerError = 'Server name must be at most 64 characters.';
+			scheduleTransientClear('createServerError', () => {
+				createServerError = null;
+			});
 			return;
 		}
 
@@ -1201,17 +1448,20 @@
 				try {
 					await apiClient.uploadServerAvatar(token, createdServer.id, createServerAvatarFile);
 				} catch (error) {
-					uploadWarning =
-						error instanceof Error
-							? error.message
-							: 'Server created, but image upload failed. You can upload it later from server settings.';
+					uploadWarning = 'You can upload it later from server settings.';
+					if (error instanceof Error && error.message && error.message !== 'Load failed') {
+						uploadWarning = `${uploadWarning} (${error.message})`;
+					}
 				}
 			}
 
 			await refreshServersData();
 			createServerMessage = uploadWarning
-				? `Server created, but image upload failed: ${uploadWarning}`
+				? `Server created, but image upload failed. ${uploadWarning}`
 				: 'Server created successfully.';
+			scheduleTransientClear('createServerMessage', () => {
+				createServerMessage = null;
+			});
 			createServerName = '';
 			createServerDescription = '';
 			createServerIsPublic = true;
@@ -1219,6 +1469,9 @@
 			createServerModalOpen = false;
 		} catch (error) {
 			createServerError = error instanceof Error ? error.message : 'Failed to create server.';
+			scheduleTransientClear('createServerError', () => {
+				createServerError = null;
+			});
 		} finally {
 			createServerLoading = false;
 		}
@@ -1264,21 +1517,21 @@
 
 		serverAvatarUploadError = null;
 		serverAvatarUploadMessage = null;
-		if (serverAvatarMessageTimeout) {
-			clearTimeout(serverAvatarMessageTimeout);
-			serverAvatarMessageTimeout = null;
-		}
+		clearTransientTimeout('serverAvatarUploadMessage');
+		clearTransientTimeout('serverAvatarUploadError');
 
 		try {
 			await apiClient.uploadServerAvatar(token, serverId, file);
 			await refreshServersData();
 			serverAvatarUploadMessage = 'Server image uploaded.';
-			serverAvatarMessageTimeout = setTimeout(() => {
+			scheduleTransientClear('serverAvatarUploadMessage', () => {
 				serverAvatarUploadMessage = null;
-				serverAvatarMessageTimeout = null;
-			}, 3000);
+			});
 		} catch (error) {
 			serverAvatarUploadError = error instanceof Error ? error.message : 'Failed to upload server image.';
+			scheduleTransientClear('serverAvatarUploadError', () => {
+				serverAvatarUploadError = null;
+			});
 		} finally {
 			input.value = '';
 		}
@@ -1684,6 +1937,9 @@
 		try {
 			await apiClient.changeMyPassword(token, currentPasswordInput, newPasswordInput);
 			passwordChangeMessage = 'Password updated successfully.';
+			scheduleTransientClear('passwordChangeMessage', () => {
+				passwordChangeMessage = null;
+			});
 			currentPasswordInput = '';
 			newPasswordInput = '';
 			newPasswordConfirmInput = '';
@@ -1693,6 +1949,9 @@
 			} else {
 				passwordChangeError = error instanceof Error ? error.message : 'Failed to update password.';
 			}
+			scheduleTransientClear('passwordChangeError', () => {
+				passwordChangeError = null;
+			});
 		} finally {
 			passwordChangeLoading = false;
 		}
@@ -1719,10 +1978,8 @@
 		profileUploadMessage = null;
 		serverAvatarUploadError = null;
 		serverAvatarUploadMessage = null;
-		if (serverAvatarMessageTimeout) {
-			clearTimeout(serverAvatarMessageTimeout);
-			serverAvatarMessageTimeout = null;
-		}
+		clearTransientTimeout('profileUploadMessage');
+		clearTransientTimeout('profileUploadError');
 
 		try {
 			await apiClient.uploadMyAvatar(token, file);
@@ -1732,8 +1989,14 @@
 			await Promise.all([refreshFriends(token), refreshPendingRequests(token)]);
 			await refreshCurrentUserAvatar();
 			profileUploadMessage = 'Profile image uploaded.';
+			scheduleTransientClear('profileUploadMessage', () => {
+				profileUploadMessage = null;
+			});
 		} catch (error) {
 			profileUploadError = error instanceof Error ? error.message : 'Failed to upload profile image.';
+			scheduleTransientClear('profileUploadError', () => {
+				profileUploadError = null;
+			});
 		} finally {
 			input.value = '';
 		}
@@ -1747,6 +2010,10 @@
 		}
 
 		setCurrentUserAvatarUrl(null);
+		for (const timeout of transientTimeouts.values()) {
+			clearTimeout(timeout);
+		}
+		transientTimeouts.clear();
 
 		settingsMenuOpen = false;
 		activeChat = 'none';
@@ -1762,6 +2029,8 @@
 		channelSettingsMenuOpen = false;
 		addFriendModalOpen = false;
 		pendingModalOpen = false;
+		serverInviteModalOpen = false;
+		inviteUserModalOpen = false;
 		createServerModalOpen = false;
 		joinServerModalOpen = false;
 		joinServerConfirmModalOpen = false;
@@ -1816,6 +2085,16 @@
 		deleteServerError = null;
 		deleteServerConfirmText = '';
 		pendingActionError = null;
+		serverInviteActionError = null;
+		serverInviteActionInProgressId = null;
+		inviteUserSearch = '';
+		inviteUserError = null;
+		inviteUserMessage = null;
+		inviteUserInProgressId = null;
+		clearServerInviteAvatars();
+		serverInvites = [];
+		clearInvitableFriendsAvatars();
+		invitableFriends = [];
 		profileUploadError = null;
 		profileUploadMessage = null;
 		passwordModalOpen = false;
@@ -1876,7 +2155,22 @@
 				kind === 'friend.request.rejected' ||
 				kind === 'friend.deleted'
 			) {
-				await refreshFriendsData();
+				await Promise.all([refreshFriendsData(), refreshServerInvites()]);
+				if (inviteUserModalOpen && $selectedServer?.id) {
+					await loadInvitableFriends();
+				}
+				return;
+			}
+
+			if (
+				kind === 'server.invite.created' ||
+				kind === 'server.invite.accepted' ||
+				kind === 'server.invite.rejected'
+			) {
+				await refreshServerInvites();
+				if (inviteUserModalOpen && $selectedServer?.id) {
+					await loadInvitableFriends();
+				}
 				return;
 			}
 
@@ -2040,6 +2334,10 @@
 		return () => {
 			window.removeEventListener('poseidon:ws-event', handler as EventListener);
 			window.removeEventListener('click', handleOutsideClick);
+			for (const timeout of transientTimeouts.values()) {
+				clearTimeout(timeout);
+			}
+			transientTimeouts.clear();
 		};
 	});
 
@@ -2049,12 +2347,21 @@
 			lastLoadedToken = null;
 			setCurrentUserAvatarUrl(null);
 			clearMessageAuthorAvatarCache();
+			clearServerInviteAvatars();
+			serverInvites = [];
+			clearInvitableFriendsAvatars();
+			invitableFriends = [];
 			return;
 		}
 
 		if (lastLoadedToken !== token) {
 			lastLoadedToken = token;
-			void Promise.all([refreshFriendsData(), refreshServersData(), refreshCurrentUserAvatar()]);
+			void Promise.all([
+				refreshFriendsData(),
+				refreshServersData(),
+				refreshServerInvites(),
+				refreshCurrentUserAvatar()
+			]);
 		}
 	});
 </script>
@@ -2270,6 +2577,17 @@
 							<button class="btn btn-primary btn-sm flex-1" type="button" onclick={() => void openJoinServerModal()}>Join a server</button>
 						</div>
 
+						{#if serverInvites.length > 0}
+							<ul class="menu rounded-box bg-slate-800/40 mb-3 w-full">
+								<li>
+									<button type="button" onclick={openServerInviteModal} class="flex items-center justify-between">
+										<span class="font-medium">Server invites</span>
+										<span class="badge badge-primary">{serverInvites.length}</span>
+									</button>
+								</li>
+							</ul>
+						{/if}
+
 						{#if createServerError}
 							<div class="alert alert-error py-2 text-sm mb-3"><span>{createServerError}</span></div>
 						{/if}
@@ -2329,6 +2647,9 @@
 							{#if serverSettingsMenuOpen}
 								<ul class="menu absolute right-0 z-[60] mt-2 w-56 rounded-box bg-slate-800 border border-slate-700 p-2 shadow">
 									{#if canManageSelectedServer()}
+										{#if $selectedServer?.isPublic === false}
+											<li><button type="button" onclick={() => void openInviteUserModal()}>Invite user</button></li>
+										{/if}
 										<li><button type="button" onclick={openCreateChannelModal}>Create channel</button></li>
 										<li><button type="button" onclick={handleOpenServerAvatarUpload}>Change server image</button></li>
 										<li><button type="button" onclick={openUpdateServerNameModal}>Rename server</button></li>
@@ -2726,6 +3047,122 @@
 												✕
 											</button>
 										</div>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				</div>
+			{/if}
+
+			{#if serverInviteModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-lg rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3 max-h-[80vh] overflow-auto">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Server invites</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={() => { serverInviteModalOpen = false; }}>✕</button>
+						</div>
+
+						{#if serverInviteActionError}
+							<div class="alert alert-error py-2 text-sm"><span>{serverInviteActionError}</span></div>
+						{/if}
+
+						{#if serverInvites.length === 0}
+							<p class="text-sm text-slate-400">No pending server invites.</p>
+						{:else}
+							<ul class="space-y-2">
+								{#each serverInvites as invite}
+									<li class="rounded-md border border-slate-700/70 bg-slate-800/40 px-3 py-2 space-y-2">
+										<div class="flex items-center gap-3 min-w-0">
+											<div class="avatar">
+												<div class="w-9 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
+													{#if invite.serverAvatarUrl}
+														<img src={invite.serverAvatarUrl} alt={`${invite.serverName} avatar`} class="h-full w-full object-cover" />
+													{:else}
+														<span class="text-xs font-semibold">{invite.serverName.slice(0, 1).toUpperCase()}</span>
+													{/if}
+												</div>
+											</div>
+											<div class="min-w-0 flex-1">
+												<p class="font-medium truncate">{invite.serverName}</p>
+												<p class="text-xs text-slate-400 truncate">Invited by {invite.fromUserName}</p>
+											</div>
+										</div>
+										<div class="flex items-center justify-end gap-2">
+											<button
+												class="btn btn-success btn-xs"
+												type="button"
+												disabled={serverInviteActionInProgressId === invite.inviteId}
+												onclick={() => void handleServerInviteDecision(invite.inviteId, 'accept')}
+											>
+												Accept
+											</button>
+											<button
+												class="btn btn-error btn-xs"
+												type="button"
+												disabled={serverInviteActionInProgressId === invite.inviteId}
+												onclick={() => void handleServerInviteDecision(invite.inviteId, 'reject')}
+											>
+												Reject
+											</button>
+										</div>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				</div>
+			{/if}
+
+			{#if inviteUserModalOpen}
+				<div class="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4">
+					<div class="w-full max-w-lg rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3 max-h-[80vh] overflow-auto">
+						<div class="flex items-center justify-between">
+							<h3 class="font-semibold">Invite user</h3>
+							<button class="btn btn-ghost btn-xs" type="button" onclick={closeInviteUserModal}>✕</button>
+						</div>
+
+						<input
+							class="input input-bordered w-full"
+							placeholder="Search friends..."
+							bind:value={inviteUserSearch}
+						/>
+
+						{#if inviteUserError}
+							<div class="alert alert-error py-2 text-sm"><span>{inviteUserError}</span></div>
+						{/if}
+						{#if inviteUserMessage}
+							<div class="alert alert-success py-2 text-sm"><span>{inviteUserMessage}</span></div>
+						{/if}
+
+						{#if inviteUserLoading}
+							<p class="text-sm text-slate-400">Loading friends...</p>
+						{:else if filteredInvitableFriends().length === 0}
+							<p class="text-sm text-slate-400">No invitable friends found.</p>
+						{:else}
+							<ul class="space-y-2">
+								{#each filteredInvitableFriends() as friend}
+									<li class="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-800/40 px-3 py-2">
+										<div class="flex items-center gap-3 min-w-0">
+											<div class="avatar">
+												<div class="w-9 rounded-full bg-slate-700 text-slate-100 flex items-center justify-center overflow-hidden">
+													{#if friend.avatarUrl}
+														<img src={friend.avatarUrl} alt={`${friend.username} avatar`} class="h-full w-full object-cover" />
+													{:else}
+														<span class="text-xs font-semibold">{friend.username.slice(0, 1).toUpperCase()}</span>
+													{/if}
+												</div>
+											</div>
+											<p class="font-medium truncate">{friend.username}</p>
+										</div>
+										<button
+											class="btn btn-primary btn-xs"
+											type="button"
+											disabled={inviteUserInProgressId === friend.id}
+											onclick={() => void handleInviteUserToSelectedServer(friend.id, friend.username)}
+										>
+											Invite
+										</button>
 									</li>
 								{/each}
 							</ul>

@@ -54,6 +54,11 @@ use utoipa_swagger_ui::SwaggerUi;
         routes::servers::join_public_server,
         routes::servers::create_invite,
         routes::servers::join_by_invite,
+        routes::servers::list_invitable_friends,
+        routes::servers::invite_user_to_private_server,
+        routes::servers::list_pending_server_invites,
+        routes::servers::accept_server_invite,
+        routes::servers::reject_server_invite,
         routes::servers::leave_server,
         routes::servers::update_member_role,
         routes::servers::remove_member,
@@ -79,8 +84,10 @@ use utoipa_swagger_ui::SwaggerUi;
             dto::FriendRequestDto,
             dto::FriendDto,
             dto::CreateServerRequest,
+            dto::CreateServerUserInviteRequest,
             dto::UpdateServerRequest,
             dto::ServerDto,
+            dto::ServerUserInviteDto,
             dto::CreateChannelRequest,
             dto::UpdateChannelRequest,
             dto::ChannelDto,
@@ -182,8 +189,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/servers/public", get(routes::servers::list_public_servers))
         .route("/servers/join/invite", post(routes::servers::join_by_invite))
+        .route("/servers/invites/pending", get(routes::servers::list_pending_server_invites))
+        .route("/servers/invites/{invite_id}/accept", post(routes::servers::accept_server_invite))
+        .route("/servers/invites/{invite_id}", delete(routes::servers::reject_server_invite))
         .route("/servers/{server_id}/join", post(routes::servers::join_public_server))
         .route("/servers/{server_id}/invite", post(routes::servers::create_invite))
+        .route("/servers/{server_id}/invitable-friends", get(routes::servers::list_invitable_friends))
+        .route("/servers/{server_id}/invites/users", post(routes::servers::invite_user_to_private_server))
         .route("/servers/{server_id}/leave", post(routes::servers::leave_server))
         .route(
             "/servers/{server_id}/members/{member_id}",
