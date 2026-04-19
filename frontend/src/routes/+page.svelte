@@ -164,6 +164,11 @@
 		updatedAt?: number | null;
 	};
 
+	type MessagePart =
+		| { type: 'text'; value: string }
+		| { type: 'link'; url: string }
+		| { type: 'image'; url: string };
+
 	let activeChat = $state<ChatView>('none');
 	let selectedChannel = $state<ServerChannel | null>(null);
 	let activeDmThreadId = $state<string | null>(null);
@@ -177,6 +182,7 @@
 	let chatSending = $state(false);
 	let chatError = $state<string | null>(null);
 	let chatContainer = $state<HTMLDivElement | null>(null);
+	let chatReloadTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	let serverChannels = $state<Record<string, ServerChannel[]>>({});
 	let channelUnreadByServer = $state<Record<string, Record<string, number>>>({});
@@ -195,6 +201,85 @@
 			clearTimeout(existing);
 			transientTimeouts.delete(key);
 		}
+	};
+
+	const URL_REGEX = /(https?:\/\/[^\s<]+)/g;
+
+	const trimLinkSuffix = (url: string): { cleanUrl: string; suffix: string } => {
+		let cleanUrl = url;
+		let suffix = '';
+		while (cleanUrl.length > 0 && /[),.!?:;\]]/.test(cleanUrl[cleanUrl.length - 1] ?? '')) {
+			suffix = `${cleanUrl[cleanUrl.length - 1]}${suffix}`;
+			cleanUrl = cleanUrl.slice(0, -1);
+		}
+
+		return { cleanUrl, suffix };
+	};
+
+	const isImageLikeUrl = (url: string): boolean => {
+		try {
+			const parsed = new URL(url);
+			const pathname = parsed.pathname.toLowerCase();
+			return /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/.test(pathname);
+		} catch {
+			return false;
+		}
+	};
+
+	const parseMessageParts = (content: string): MessagePart[] => {
+		const parts: MessagePart[] = [];
+		let cursor = 0;
+
+		for (const match of content.matchAll(URL_REGEX)) {
+			const rawUrl = match[0];
+			const start = match.index ?? 0;
+			if (start > cursor) {
+				parts.push({ type: 'text', value: content.slice(cursor, start) });
+			}
+
+			const { cleanUrl, suffix } = trimLinkSuffix(rawUrl);
+			if (cleanUrl) {
+				if (isImageLikeUrl(cleanUrl)) {
+					parts.push({ type: 'image', url: cleanUrl });
+				} else {
+					parts.push({ type: 'link', url: cleanUrl });
+				}
+			} else {
+				parts.push({ type: 'text', value: rawUrl });
+			}
+
+			if (suffix) {
+				parts.push({ type: 'text', value: suffix });
+			}
+
+			cursor = start + rawUrl.length;
+		}
+
+		if (cursor < content.length) {
+			parts.push({ type: 'text', value: content.slice(cursor) });
+		}
+
+		if (parts.length === 0) {
+			parts.push({ type: 'text', value: content });
+		}
+
+		return parts;
+	};
+
+	const openMessageUrl = async (event: MouseEvent, url: string) => {
+		event.preventDefault();
+
+		try {
+			if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+				const opener = await import('@tauri-apps/plugin-opener');
+				await opener.openUrl(url);
+				return;
+			}
+		} catch {
+			// Fall back to browser tab open below.
+		}
+
+		window.open(url, '_blank', 'noopener,noreferrer');
 	};
 
 	const scheduleTransientClear = (key: string, clearFn: () => void, ms = 5000) => {
@@ -798,6 +883,18 @@
 				chatContainer.scrollTop = Math.max(0, previousScrollTop + heightDelta);
 			}
 		}
+	};
+
+	const scheduleActiveMessagesReload = (options?: { silent?: boolean; forceBottom?: boolean }) => {
+		if (chatReloadTimeout) {
+			clearTimeout(chatReloadTimeout);
+			chatReloadTimeout = null;
+		}
+
+		chatReloadTimeout = setTimeout(() => {
+			chatReloadTimeout = null;
+			void loadActiveMessages(options);
+		}, 120);
 	};
 
 	const loadServerChannels = async (serverId: string) => {
@@ -2010,6 +2107,10 @@
 		}
 
 		setCurrentUserAvatarUrl(null);
+		if (chatReloadTimeout) {
+			clearTimeout(chatReloadTimeout);
+			chatReloadTimeout = null;
+		}
 		for (const timeout of transientTimeouts.values()) {
 			clearTimeout(timeout);
 		}
@@ -2242,7 +2343,11 @@
 					activeDmThreadId &&
 					payload.thread_id === activeDmThreadId
 				) {
-					await loadActiveMessages({ silent: true, forceBottom: true });
+					const ownCreatedInActiveThread =
+						kind === 'dm.message.created' && payload.user_id === $session.userId;
+					if (!ownCreatedInActiveThread) {
+						scheduleActiveMessagesReload({ silent: true, forceBottom: true });
+					}
 				}
 				return;
 			}
@@ -2265,7 +2370,11 @@
 				}
 
 				if (isActiveChannel) {
-					await loadActiveMessages({ silent: true, forceBottom: true });
+					const ownCreatedInActiveChannel =
+						kind === 'channel.message.created' && payload.user_id === $session.userId;
+					if (!ownCreatedInActiveChannel) {
+						scheduleActiveMessagesReload({ silent: true, forceBottom: true });
+					}
 				}
 			}
 		};
@@ -2334,6 +2443,10 @@
 		return () => {
 			window.removeEventListener('poseidon:ws-event', handler as EventListener);
 			window.removeEventListener('click', handleOutsideClick);
+			if (chatReloadTimeout) {
+				clearTimeout(chatReloadTimeout);
+				chatReloadTimeout = null;
+			}
 			for (const timeout of transientTimeouts.values()) {
 				clearTimeout(timeout);
 			}
@@ -2775,7 +2888,7 @@
 						{:else if chatMessages.length === 0}
 							<p class="text-sm text-slate-400">No messages yet.</p>
 						{:else}
-							{#each chatMessages as msg, idx}
+							{#each chatMessages as msg, idx (msg.id)}
 								<div class={`chat ${msg.userId === $session.userId ? 'chat-end' : 'chat-start'}`} data-msg-index={idx}>
 									{#if activeChat === 'server' || activeChat === 'friend'}
 										<div class={`chat-image avatar ${msg.userId === $session.userId ? 'order-2' : ''}`}>
@@ -2808,7 +2921,38 @@
 									<div
 										class={`chat-bubble whitespace-pre-wrap break-words ${msg.userId === $session.userId ? 'chat-bubble-primary' : 'bg-slate-700 text-slate-100'}`}
 									>
-										{msg.content}
+										<div class="space-y-2">
+											{#each parseMessageParts(msg.content) as part, partIndex (partIndex)}
+												{#if part.type === 'text'}
+													<span class="whitespace-pre-wrap break-words">{part.value}</span>
+												{:else if part.type === 'link'}
+													<a
+														href={part.url}
+														target="_blank"
+														rel="noopener noreferrer"
+														class="underline break-all"
+														onclick={(event) => void openMessageUrl(event, part.url)}
+													>
+														{part.url}
+													</a>
+												{:else}
+													<a
+														href={part.url}
+														target="_blank"
+														rel="noopener noreferrer"
+														class="block"
+														onclick={(event) => void openMessageUrl(event, part.url)}
+													>
+														<img
+															src={part.url}
+															alt="Shared media"
+															loading="lazy"
+															class="mt-1 max-h-80 max-w-full rounded-md border border-slate-500/50 object-contain bg-black/20"
+														/>
+													</a>
+												{/if}
+											{/each}
+										</div>
 									</div>
 									<div class="chat-footer text-[10px] text-slate-500 mt-1">
 										<div class="flex items-center gap-2">
