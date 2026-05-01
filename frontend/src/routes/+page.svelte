@@ -422,49 +422,63 @@
 	};
 
 	const switchAuthMode = () => {
+		console.log('[DEBUG] Switching auth mode from', authMode);
 		authMode = authMode === 'login' ? 'register' : 'login';
 		authError = null;
 		password = '';
 		confirmPassword = '';
+		console.log('[DEBUG] Switched auth mode to', authMode);
 	};
 
 	const submitAuth = async () => {
+		console.log('[DEBUG] submitAuth started, authMode:', authMode);
 		authError = null;
 
 		try {
 			if (authMode === 'login') {
 				if (!loginIdentifier.trim() || !password) {
 					authError = 'Enter your username/email and password.';
+					console.log('[DEBUG] Validation error: missing credentials');
 					return;
 				}
 
+				console.log('[DEBUG] Calling login API with:', loginIdentifier);
 				await login(loginIdentifier.trim(), password);
+				console.log('[DEBUG] Login API succeeded');
 				return;
 			}
 
 			if (!username.trim()) {
 				authError = 'Username is required.';
+				console.log('[DEBUG] Validation error: missing username');
 				return;
 			}
 
 			if (!email.includes('@')) {
 				authError = 'Enter a valid email address.';
+				console.log('[DEBUG] Validation error: invalid email');
 				return;
 			}
 
 			if (password.length < 6) {
 				authError = 'Password must be at least 6 characters.';
+				console.log('[DEBUG] Validation error: weak password');
 				return;
 			}
 
 			if (password !== confirmPassword) {
 				authError = 'The passwords do not match.';
+				console.log('[DEBUG] Validation error: password mismatch');
 				return;
 			}
 
+			console.log('[DEBUG] Calling register API');
 			await register(username.trim(), email.trim().toLowerCase(), password);
+			console.log('[DEBUG] Register API succeeded');
 		} catch (error) {
-			authError = error instanceof Error ? error.message : 'Authentication failed.';
+			const message = error instanceof Error ? error.message : 'Authentication failed.';
+			authError = message;
+			console.error('[DEBUG] Auth error:', message, error);
 		}
 	};
 
@@ -2136,7 +2150,8 @@
 		}
 	};
 
-	const handleLogout = () => {
+	const handleLogout = async () => {
+		console.log('[DEBUG] handleLogout called');
 		for (const item of publicServers) {
 			if (item.avatarUrl?.startsWith('blob:')) {
 				URL.revokeObjectURL(item.avatarUrl);
@@ -2242,7 +2257,12 @@
 		newPasswordInput = '';
 		newPasswordConfirmInput = '';
 		lastLoadedToken = null;
-		logout();
+		
+		try {
+			await logout();
+		} catch (error) {
+			console.error('[DEBUG] logout error:', error);
+		}
 	};
 
 	onMount(() => {
@@ -2493,14 +2513,8 @@
 
 	$effect(() => {
 		const token = $session.accessToken;
+		console.log('[EFFECT] Session effect triggered, token:', token ? 'present' : 'null');
 		if (!token) {
-			lastLoadedToken = null;
-			setCurrentUserAvatarUrl(null);
-			clearMessageAuthorAvatarCache();
-			clearServerInviteAvatars();
-			serverInvites = [];
-			clearInvitableFriendsAvatars();
-			invitableFriends = [];
 			return;
 		}
 
@@ -2524,12 +2538,8 @@
 
 		<div class="flex-1 overflow-auto px-4 py-6 sm:px-8 sm:py-8 md:px-12 md:py-10">
 			<div class="w-full max-w-xl mx-auto rounded-xl border border-slate-700/70 bg-slate-800/50 p-4 sm:p-6 md:p-8">
-				<form
+				<div
 					class="space-y-6"
-					onsubmit={(e) => {
-						e.preventDefault();
-						void submitAuth();
-					}}
 				>
 					<h2 class="text-xl font-semibold">{authMode === 'login' ? 'Sign in' : 'Sign up'}</h2>
 
@@ -2570,7 +2580,7 @@
 							</div>
 						{/if}
 
-						<button class="btn btn-primary w-full" type="submit">
+						<button class="btn btn-primary w-full" type="button" onclick={submitAuth}>
 							{authMode === 'login' ? 'Sign in' : 'Sign up'}
 						</button>
 
@@ -2578,7 +2588,7 @@
 							{authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
 						</button>
 					</div>
-				</form>
+				</div>
 			</div>
 		</div>
 	</section>

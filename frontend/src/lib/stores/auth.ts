@@ -52,6 +52,7 @@ const initialSession = (): AuthSession => {
 export const session = writable<AuthSession>(initialSession());
 
 session.subscribe((value) => {
+	console.log('[SESSION STORE] Session changed:', value);
 	const s = storage();
 	if (!s) {
 		return;
@@ -69,6 +70,7 @@ function updateSession(data: {
 	refresh_token: string;
 	user: { id: string; username: string };
 }): void {
+	console.log('[AUTH] updateSession called with user:', data.user);
 	session.set({
 		accessToken: data.access_token,
 		refreshToken: data.refresh_token,
@@ -81,15 +83,20 @@ function updateSession(data: {
 			window.dispatchEvent(new CustomEvent<RealtimeEvent>('poseidon:ws-event', { detail: event }));
 		}
 	});
+	console.log('[AUTH] updateSession completed');
 }
 
 export async function login(username: string, password: string): Promise<void> {
+	console.log('[AUTH] login called with username:', username);
 	const data = await apiClient.login(username, password);
+	console.log('[AUTH] login API response:', data);
 	updateSession(data as { access_token: string; refresh_token: string; user: { id: string; username: string } });
 }
 
 export async function register(username: string, email: string, password: string): Promise<void> {
+	console.log('[AUTH] register called with username:', username, 'email:', email);
 	const data = await apiClient.register(username, email, password);
+	console.log('[AUTH] register API response:', data);
 	updateSession(data as { access_token: string; refresh_token: string; user: { id: string; username: string } });
 }
 

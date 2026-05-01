@@ -72,6 +72,7 @@ async function request<T>(
 	body?: JsonBody,
 	token?: string
 ): Promise<T> {
+	console.log('[API] Request:', method, path);
 	const res = await fetch(`${API_BASE_URL}${path}`, {
 		method,
 		headers: {
@@ -80,6 +81,8 @@ async function request<T>(
 		},
 		body: body ? JSON.stringify(body) : undefined
 	});
+
+	console.log('[API] Response status:', res.status);
 
 	if (!res.ok) {
 		let message = `Request failed (${res.status})`;
@@ -97,6 +100,7 @@ async function request<T>(
 			}
 		}
 
+		console.error('[API] Error:', message);
 		throw new Error(message);
 	}
 
@@ -104,7 +108,9 @@ async function request<T>(
 		return undefined as T;
 	}
 
-	return (await res.json()) as T;
+	const data = (await res.json()) as T;
+	console.log('[API] Response data received');
+	return data;
 }
 
 export const apiClient = {
