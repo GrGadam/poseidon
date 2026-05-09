@@ -1,0 +1,219 @@
+User: A gyakorlat teljesítéséhez szükséges egy projektmunka megvalósítása, amely egy
+teljes web-rendszert mutat be. A rendszer technológiától függetlenül megvalósulhat
+bármilyen keretrendszert használva. A projektmunka 5 részből áll össze: egy
+adatbázisból, egy szerver oldalból (REST végpontokkal), egy web-alkalmazásból,
+amelyek együtt egy teljes web-rendszert alkotnak, továbbá egy szoftveres
+dokumentációból és egy, az AI használatát ismertető, promptelemzésből. A
+hallgatóknak önállóan kell dolgozniuk a projekten, nem csapatmunka!
+A szervernek REST API-kat kell biztosítania, amelyek felelősek az alapvető CRUD
+(Create-Read-Update-Delete) műveletekért. Kommunikálnia kell egy adatbázis
+példánnyal, feldolgoznia a klienstől érkező kéréseket és lekérdezéseket kell indítania
+az adatbázis felé. A projektnek a CRUD műveleteknél a hitelesítést (csak autentikált
+felhasználó hajthatja végre) és session-kezelést támogatnia kell. Új felhasználók
+kezelése érdekében a regisztráció megvalósítása is szükséges.
+A web-alkalmazásnak HTTP kéréseket kell tudnia indítani REST-en a szerver felé. A
+web-alkalmazásból a a GUI-n keresztül a felhasználónak végre kell tudnia hajtani az
+alapvető CRUD műveleteket. A végrehajtott műveletek alapján a szerver
+visszaválaszol a kliensnek, ami megjeleníti az eredményeket a böngészőben.
+Az adatbázis adatokat tud szolgáltatni a szerveren keresztül a kliensnek. Az
+adatbázis lehet helyben host-olt, konténerizált, de akár felhőben host-olt példány (pl.:
+MongoDB Atlas) használata is megengedett. Az adatmodellnek tartalmaznia kell
+legalább 5 entitást/kollekciót és azok megfelelő kapcsolatkezelését. Az adatbázisnak
+alapértelmezetten tartalmaznia kell néhány demó adatot, amely megjeleníthető a
+web-alkalmazásban.
+A dokumentációnak tartalmaznia kell a választott technológia stack-et, kifejteni és
+indokolni, hogy miért azokat a megoldásokat választotta. A dokumentáció térjen ki
+arra, hogy milyen megvalósított funkcionális és nem-funkcionális követelményeknek
+felel meg a projekt. A dokumentációt a repository-ban egy docs mappába kell tenni.
+Az AI használata nem kötelező, de ajánlott. A projekt fejlesztése során használt
+prompt-okat (beszélgetéseket) fel kell tölteni (pl.: GitHub Copilot Pro Chat export).
+Egy rövid elemzéssel be kell mutatni, hogy mely fázisokra használta a fejlesztő az
+AI-t, és kigyűjteni néhány prompt-ot, ami jól működött, és néhányat, ami nem jól
+működött. A prompt-ok dokumentálása a repository prompts mappájába történjen
+meg. Aki nem használt egyáltalán AI-t, annak a prompts mappában egy md fájlban
+erről nyilatkoznia kell. Ilyen esetben megkapja a maximális pontot. Ha nyilatkozik, de
+kiderül, hogy mégis használt AI-t, a feladatrész 0 ponttal kerül értékelésre.
+A projektet fel kell tölteni a GitHub Classroom-ban létrehozott repository-ba.
+Ezenkívül a hallgatóknak készíteniük kell egy Readme.md fájlt, amely segít a
+rendszer különböző elemeinek telepítésében és futtatásában.
+
+Végezd el a következő feladatokat szigorúan a követelmények alapján:
+1. Csináld meg az md filet hogy hogyan kell setupolni és futtatni a projectet.
+2. csináld meg a technológiai stack leírását és indoklását.
+3. Az elkészített project alapján és a követelmények alapján csináld meg a megvalósított funkcionális és nem-funkcionális követelmények megvalósított listáját is.
+4. AI használati elemzést is kérek
+
+GitHub Copilot: Optimizing tool selection...A projekt jelenlegi szerkezetét és a meglévő dokumentációs pontokat nézem át először, hogy a README, a technológiai stack, a követelménylista és az AI-elemzés a tényleges backend/frontend stackre épüljön.
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/docs)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/backend)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/frontend)
+
+Most már látszik, hogy nincs gyökér README, viszont van két docs-fájl, ezért a következő lépésben a stack és a meglévő funkciók alapján ezek tartalmát fogom kitölteni vagy frissíteni. Előbb a függőségeket és a REST/funkciók elérhető felületeit nézem meg, hogy ne általános leírás készüljön.
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/docs/README.md)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/docs/prompt-analysis.md)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/backend/Cargo.toml)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/frontend/package.json)
+
+Most a ténylegesen megvalósított REST és GUI funkciókat azonosítom, hogy a követelménylista ne általános, hanem bizonyítható legyen. Ehhez az útvonalakat és a frontend fő nézeteit keresem meg.
+
+Searched for regex `route|Router|post\(|get\(|put\(|delete\(` (`**/backend/src/**/*.rs`), 200 results
+
+Searched for regex `fetch\(|load\(|createServerAction|form` (`**/frontend/src/**/*.{ts,svelte,js,css}`), 25 results
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/frontend/src/routes)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/backend/src/routes)
+
+A következő körben a konkrét funkciók mélységét tisztázom: mely CRUD műveletek, auth/session műveletek és kliensoldali műveletek vannak ténylegesen bekötve. Ez adja majd a követelménylista alapját.
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/backend/src/main.rs)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/frontend/src/lib/api/client.ts)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/frontend/src/lib/api/ws.ts)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/backend/migrations/0006_demo_data.sql)
+
+Az adatmodell és a seed már tiszta; most a kliensfelület fő moduljait nézem meg, hogy a dokumentációban a GUI oldalát pontosan le lehessen írni. A cél: ne csak API-szintű, hanem felhasználói szintű követelménylista készüljön.
+
+Searched for regex `Friends|Servers|Direct messages|DM|Settings|Login|Register|Invite|Channels|Members` (`**/frontend/src/routes/+page.svelte`), 200 results
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/frontend/src/routes/%2Bpage.svelte#1-1), lines 1 to 260
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/frontend/src/routes/%2Bpage.svelte#260-260), lines 260 to 620
+
+A futó instrukciókhoz még a környezeti változókat is ellenőrzöm, mert a setup leírásban ezeknek pontosnak kell lenniük. Ezután már csak a dokumentumok megírása és egy gyors szerkezeti ellenőrzés marad.
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/backend/src/config.rs)
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/backend/src/routes/auth.rs#1-1), lines 1 to 220
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/frontend/src/lib/stores/auth.ts)
+
+Most már megvan a célzott tartalom: egy gyökér README a futtatáshoz, egy docs-dokumentum a stackhez és a követelményekhez, valamint egy külön prompts fájl az AI-elemzéshez. Most létrehozom a hiányzó mappát, majd egyben beírom a dokumentációt.
+
+Created [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts)
+
+Apply Patch
+
+A dokumentáció három része most egyben készül: futtatási útmutató, részletes technológiai és követelmény-doksi, valamint külön AI-elemzés a prompts mappába. Utána gyorsan ellenőrzöm, hogy minden fájl tényleg létrejött-e és nincs-e szerkezeti hiba.
+
+Generating patch (295 lines) in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/docs/README.md), [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/README.md), [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+
+```
+
+```
+
+```
+
+```
+
+```
+
+```
+A szövegek be vannak írva; most egy gyors diffellenőrzéssel megnézem, hogy pontosan csak a három dokumentációs fájl változott-e, és hogy a tartalom a várt helyre került-e.
+
+Read changed files in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon)
+
+Elkészítettem a futtatási útmutatót a README.md-ben, frissítettem a részletes technológiai stacket és a megvalósított funkcionális/nem-funkcionális követelményeket a docs/README.md-ben, és létrehoztam az AI-használati elemzést a prompts/ai-usage-analysis.md-ben.
+
+Ellenőriztem a módosításokat diff-fel; mivel most csak dokumentáció készült, külön buildet vagy futtatást nem kellett indítanom. Ha szeretnéd, a következő lépésben egységesítem a régi docs/prompt-analysis.md-t is az új prompts-struktúrához.You've used 98% of your weekly rate limit. Your weekly rate limit will reset on május 11. 2:00. [Learn More](https://aka.ms/github-copilot-rate-limit-error)
+
+Made changes.
+
+User: A prompts/prompts_export.txt alapján frissítsd az ai-usage-analyzsis.md-t az abban található promptokkal!
+
+GitHub Copilot: Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/prompts_export.txt#1-1), lines 1 to 500
+
+Megolvasok a prompts_export.txt fájlt, majd frissítem az ai-usage-analysis.md-t a benne lévő konkrét promptokkal.
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/README.md)
+
+Most frissítem az ai-usage-analysis.md-t a prompts_export.txt alapján lévő konkrét promptokkal:
+
+Replacing 10 lines with 26 lines in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+
+```
+
+```
+Most frissítem a kevésbé jól működő promptok szekciót is:
+
+Replacing 10 lines with 15 lines in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+
+```
+
+```
+Most frissítem a fázisokat is az export alapján:
+
+Replacing 7 lines with 19 lines in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+
+```
+
+```
+Most frissítem az összefoglalót és a tanulságot az export alapján:
+
+Replacing 5 lines with 13 lines in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+
+```
+
+```
+Most frissítem a tanulságot az export alapján:
+
+Replacing 10 lines with 42 lines in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+
+```
+
+```
+Most hozzáadok az exportból nyert konkrét promptokról egy szekciót:
+
+Replacing 1 lines with 38 lines in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+
+```
+
+```
+Most ellenőrzöm a frissített fájlt:
+
+Read [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+Most egy kis formázási javítás – az interaktív parancsok szekciójában hiányzik egy sorkezdés:
+
+Replacing 3 lines with 4 lines in [](file:///home/grgadam/Dokumentumok/Egyetem/MSc/prf/poseidon/prompts/ai-usage-analysis.md)
+
+
+```
+
+```
+✅ Sikeresen frissítettem az ai-usage-analysis.md fájlt a prompts_export.txt alapján!
+
+A frissített dokumentáció most tartalmazza:
+
+1. **Az alapító specifikációs prompt** – a Teamspeak/Discord-szerű alkalmazás teljes specifikációja, amely a projekt alapját képezte
+2. **Az orchestration prompt** – "Start implementation" – amely elindította az aktuális fejlesztést
+3. **5 fázisos fejlesztési folyamat** – specifikációtól a dokumentációig
+4. **Konkrét tanulságok az export alapján**:
+   - Az AI legjobban fázisos tervvel dolgozik
+   - Az interaktív CLI parancsok blokkolhatják az automatizálást (megoldás: non-interactive flagek)
+   - Subagent parallelization segít az összetett taskokra
+   - Realtime kódgeneráció és dokumentáció
+
+5. **Praktikus prompt-írási heurisztikák** – táblázatban, a jövőbeni AI-felhasználásra
+
+A dokumentáció most **tényleges munkafolyamatot és eredményeket** mutat, nem csak általános tanácsokat, és jobban tükrözi a Poseidon projekt szofisztikációját.You've used 98% of your weekly rate limit. Your weekly rate limit will reset on május 11. 2:00. [Learn More](https://aka.ms/github-copilot-rate-limit-error)
+
+Made changes.
